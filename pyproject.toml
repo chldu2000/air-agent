@@ -1,6 +1,6 @@
 [project]
 name = "air-agent"
-version = "0.1.1"
+version = "0.1.2"
 description = "Lightweight Python AI agent with OpenAI tool calling, MCP support, and parallel subagents"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -9,6 +9,9 @@ dependencies = [
     "mcp>=1.0",
     "pydantic>=2.0",
 ]
+
+[project.urls]
+"Repository" = "https://github.com/chldu2000/air-agent"
 
 [dependency-groups]
 dev = [
