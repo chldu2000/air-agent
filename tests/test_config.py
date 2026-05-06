@@ -96,10 +96,10 @@ class TestFromJson:
 
 class TestFromEnv:
     def test_string_fields(self, monkeypatch):
-        monkeypatch.setenv("VIBE_MODEL", "gpt-4.1")
-        monkeypatch.setenv("VIBE_API_KEY", "sk-test")
-        monkeypatch.setenv("VIBE_BASE_URL", "https://api.example.com")
-        monkeypatch.setenv("VIBE_SYSTEM_PROMPT", "Be concise.")
+        monkeypatch.setenv("AIR_MODEL", "gpt-4.1")
+        monkeypatch.setenv("AIR_API_KEY", "sk-test")
+        monkeypatch.setenv("AIR_BASE_URL", "https://api.example.com")
+        monkeypatch.setenv("AIR_SYSTEM_PROMPT", "Be concise.")
         config = AgentConfig.from_env()
 
         assert config.model == "gpt-4.1"
@@ -108,8 +108,8 @@ class TestFromEnv:
         assert config.system_prompt == "Be concise."
 
     def test_numeric_coercion(self, monkeypatch):
-        monkeypatch.setenv("VIBE_MAX_ITERATIONS", "30")
-        monkeypatch.setenv("VIBE_TOOL_TIMEOUT", "45.5")
+        monkeypatch.setenv("AIR_MAX_ITERATIONS", "30")
+        monkeypatch.setenv("AIR_TOOL_TIMEOUT", "45.5")
         config = AgentConfig.from_env()
 
         assert config.max_iterations == 30
@@ -118,7 +118,7 @@ class TestFromEnv:
         assert isinstance(config.tool_timeout, float)
 
     def test_mcp_servers_json(self, monkeypatch):
-        monkeypatch.setenv("VIBE_MCP_SERVERS", json.dumps([
+        monkeypatch.setenv("AIR_MCP_SERVERS", json.dumps([
             {"command": "npx", "args": ["server"]},
             {"url": "http://localhost:8080/sse"},
         ]))
@@ -129,7 +129,7 @@ class TestFromEnv:
         assert isinstance(config.mcp_servers[1], MCPServerSSE)
 
     def test_default_headers_json(self, monkeypatch):
-        monkeypatch.setenv("VIBE_DEFAULT_HEADERS", json.dumps({"X-Custom": "value"}))
+        monkeypatch.setenv("AIR_DEFAULT_HEADERS", json.dumps({"X-Custom": "value"}))
         config = AgentConfig.from_env()
 
         assert config.default_headers == {"X-Custom": "value"}
@@ -144,7 +144,7 @@ class TestFromEnv:
 
     def test_no_vars_returns_defaults(self, monkeypatch):
         for key in list(monkeypatch._env if hasattr(monkeypatch, '_env') else {}):
-            if key.startswith("VIBE_"):
+            if key.startswith("AIR_"):
                 monkeypatch.delenv(key, raising=False)
         config = AgentConfig.from_env()
 

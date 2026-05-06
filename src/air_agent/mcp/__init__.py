@@ -1,1 +1,1 @@
-"""MCP client integration for vibe-agent."""
+"""MCP client integration for air-agent."""

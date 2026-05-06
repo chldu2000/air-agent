@@ -70,7 +70,7 @@ class AgentConfig:
         return cls(mcp_servers=mcp_servers, **kwargs)
 
     @classmethod
-    def from_env(cls, prefix: str = "VIBE_") -> AgentConfig:
+    def from_env(cls, prefix: str = "AIR_") -> AgentConfig:
         kwargs: dict[str, Any] = {}
 
         env_map: dict[str, tuple[str, type]] = {

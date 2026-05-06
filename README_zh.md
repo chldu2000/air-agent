@@ -22,7 +22,7 @@ uv sync --group dev
 
 ```python
 import asyncio
-from vibe_agent import Agent, AgentConfig
+from air_agent import Agent, AgentConfig
 
 async def main():
     agent = Agent(AgentConfig(model="gpt-4o"))
@@ -92,14 +92,14 @@ JSON 中 `mcp_servers` 根据 `command`（stdio）或 `url`（SSE）自动识别
 ### 从环境变量加载配置
 
 ```bash
-export VIBE_MODEL=gpt-4o
-export VIBE_SYSTEM_PROMPT="你是一个助手"
-export VIBE_MAX_ITERATIONS=30
-export VIBE_MCP_SERVERS='[{"command":"npx","args":["server"]}]'
+export AIR_MODEL=gpt-4o
+export AIR_SYSTEM_PROMPT="你是一个助手"
+export AIR_MAX_ITERATIONS=30
+export AIR_MCP_SERVERS='[{"command":"npx","args":["server"]}]'
 ```
 
 ```python
-config = AgentConfig.from_env()          # 默认 VIBE_ 前缀
+config = AgentConfig.from_env()          # 默认 AIR_ 前缀
 config = AgentConfig.from_env(prefix="MYAPP_")  # 自定义前缀
 agent = Agent(config)
 ```
@@ -108,19 +108,19 @@ agent = Agent(config)
 
 | 变量 | 类型 | 说明 |
 | ---- | ---- | ---- |
-| `VIBE_MODEL` | str | 模型名称 |
-| `VIBE_API_KEY` | str | API 密钥（优先级高于 `OPENAI_API_KEY`） |
-| `VIBE_BASE_URL` | str | 自定义 API endpoint |
-| `VIBE_SYSTEM_PROMPT` | str | 系统提示词 |
-| `VIBE_MAX_ITERATIONS` | int | 最大工具调用轮次 |
-| `VIBE_TOOL_TIMEOUT` | float | 工具调用超时（秒） |
-| `VIBE_MCP_SERVERS` | JSON | MCP server 列表 |
-| `VIBE_DEFAULT_HEADERS` | JSON | 自定义请求头 |
+| `AIR_MODEL` | str | 模型名称 |
+| `AIR_API_KEY` | str | API 密钥（优先级高于 `OPENAI_API_KEY`） |
+| `AIR_BASE_URL` | str | 自定义 API endpoint |
+| `AIR_SYSTEM_PROMPT` | str | 系统提示词 |
+| `AIR_MAX_ITERATIONS` | int | 最大工具调用轮次 |
+| `AIR_TOOL_TIMEOUT` | float | 工具调用超时（秒） |
+| `AIR_MCP_SERVERS` | JSON | MCP server 列表 |
+| `AIR_DEFAULT_HEADERS` | JSON | 自定义请求头 |
 
 ### 连接 MCP Server
 
 ```python
-from vibe_agent import MCPServerStdio, MCPServerSSE
+from air_agent import MCPServerStdio, MCPServerSSE
 
 agent = Agent(AgentConfig(
     model="gpt-4o",
@@ -139,7 +139,7 @@ async with agent:  # 自动连接/断开 MCP server
 ### 并行 Subagent
 
 ```python
-from vibe_agent import SubagentConfig
+from air_agent import SubagentConfig
 
 results = await agent.delegate(
     tasks=[
@@ -173,7 +173,7 @@ AgentConfig(
 ## 项目结构
 
 ```text
-src/vibe_agent/
+src/air_agent/
 ├── __init__.py          # 公开 API 导出
 ├── agent.py             # 核心 Agent（ReAct 循环 + 流式输出）
 ├── config.py            # 配置数据类

@@ -22,7 +22,7 @@ uv sync --group dev
 
 ```python
 import asyncio
-from vibe_agent import Agent, AgentConfig
+from air_agent import Agent, AgentConfig
 
 async def main():
     agent = Agent(AgentConfig(model="gpt-4o"))
@@ -92,14 +92,14 @@ The `mcp_servers` field auto-detects the transport type based on `command` (stdi
 ### Load Configuration from Environment Variables
 
 ```bash
-export VIBE_MODEL=gpt-4o
-export VIBE_SYSTEM_PROMPT="You are an assistant"
-export VIBE_MAX_ITERATIONS=30
-export VIBE_MCP_SERVERS='[{"command":"npx","args":["server"]}]'
+export AIR_MODEL=gpt-4o
+export AIR_SYSTEM_PROMPT="You are an assistant"
+export AIR_MAX_ITERATIONS=30
+export AIR_MCP_SERVERS='[{"command":"npx","args":["server"]}]'
 ```
 
 ```python
-config = AgentConfig.from_env()          # default VIBE_ prefix
+config = AgentConfig.from_env()          # default AIR_ prefix
 config = AgentConfig.from_env(prefix="MYAPP_")  # custom prefix
 agent = Agent(config)
 ```
@@ -108,19 +108,19 @@ Supported environment variables:
 
 | Variable | Type | Description |
 | ---- | ---- | ---- |
-| `VIBE_MODEL` | str | Model name |
-| `VIBE_API_KEY` | str | API key (takes precedence over `OPENAI_API_KEY`) |
-| `VIBE_BASE_URL` | str | Custom API endpoint |
-| `VIBE_SYSTEM_PROMPT` | str | System prompt |
-| `VIBE_MAX_ITERATIONS` | int | Max tool-calling rounds |
-| `VIBE_TOOL_TIMEOUT` | float | Tool call timeout in seconds |
-| `VIBE_MCP_SERVERS` | JSON | MCP server list |
-| `VIBE_DEFAULT_HEADERS` | JSON | Custom request headers |
+| `AIR_MODEL` | str | Model name |
+| `AIR_API_KEY` | str | API key (takes precedence over `OPENAI_API_KEY`) |
+| `AIR_BASE_URL` | str | Custom API endpoint |
+| `AIR_SYSTEM_PROMPT` | str | System prompt |
+| `AIR_MAX_ITERATIONS` | int | Max tool-calling rounds |
+| `AIR_TOOL_TIMEOUT` | float | Tool call timeout in seconds |
+| `AIR_MCP_SERVERS` | JSON | MCP server list |
+| `AIR_DEFAULT_HEADERS` | JSON | Custom request headers |
 
 ### Connect to MCP Servers
 
 ```python
-from vibe_agent import MCPServerStdio, MCPServerSSE
+from air_agent import MCPServerStdio, MCPServerSSE
 
 agent = Agent(AgentConfig(
     model="gpt-4o",
@@ -139,7 +139,7 @@ Supports both stdio and StreamableHTTP MCP transports. Once connected, tools exp
 ### Parallel Subagents
 
 ```python
-from vibe_agent import SubagentConfig
+from air_agent import SubagentConfig
 
 results = await agent.delegate(
     tasks=[
@@ -173,7 +173,7 @@ AgentConfig(
 ## Project Structure
 
 ```text
-src/vibe_agent/
+src/air_agent/
 ├── __init__.py          # Public API exports
 ├── agent.py             # Core Agent (ReAct loop + streaming)
 ├── config.py            # Configuration dataclass

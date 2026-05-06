@@ -1,4 +1,4 @@
-"""Vibe Agent — lightweight AI agent library."""
+"""Air Agent — lightweight AI agent library."""
 
 from air_agent.config import AgentConfig, MCPServerStdio, MCPServerSSE, SubagentConfig
 from air_agent.types import Response, StreamEvent, SubagentResult
