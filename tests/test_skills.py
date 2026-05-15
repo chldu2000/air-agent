@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from pathlib import Path
 
+from air_agent.skills.manager import SkillManager
 from air_agent.skills.skill import Skill, parse_skill_file
 
 
@@ -84,3 +85,91 @@ class TestParseSkillFile:
         assert skill is not None
         assert "## Section" in skill.content
         assert "- Item 1" in skill.content
+
+
+class TestSkillManager:
+    def _create_skill_file(self, directory: Path, filename: str, name: str, description: str, content: str = ""):
+        path = directory / filename
+        path.write_text(
+            f"---\nname: {name}\ndescription: {description}\n---\n{content}\n"
+        )
+
+    def test_load_scans_directory(self, tmp_path: Path):
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        self._create_skill_file(skills_dir, "brainstorming.md", "brainstorming", "Use when creating")
+        self._create_skill_file(skills_dir, "debugging.md", "debugging", "Use when bugs")
+
+        manager = SkillManager(skills_dir)
+        manager.load()
+
+        assert len(manager.skills) == 2
+        names = {s.name for s in manager.skills}
+        assert "brainstorming" in names
+        assert "debugging" in names
+
+    def test_load_skips_invalid_files(self, tmp_path: Path):
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        self._create_skill_file(skills_dir, "valid.md", "valid", "Use when valid")
+        (skills_dir / "invalid.md").write_text("# No frontmatter\n")
+
+        manager = SkillManager(skills_dir)
+        manager.load()
+
+        assert len(manager.skills) == 1
+        assert manager.skills[0].name == "valid"
+
+    def test_load_ignores_non_md_files(self, tmp_path: Path):
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        self._create_skill_file(skills_dir, "skill.md", "skill", "Use when needed")
+        (skills_dir / "notes.txt").write_text("Not a skill file\n")
+
+        manager = SkillManager(skills_dir)
+        manager.load()
+
+        assert len(manager.skills) == 1
+
+    def test_metadata_summary(self, tmp_path: Path):
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        self._create_skill_file(skills_dir, "a.md", "brainstorming", "Use when creating")
+        self._create_skill_file(skills_dir, "b.md", "debugging", "Use when bugs found")
+
+        manager = SkillManager(skills_dir)
+        manager.load()
+
+        summary = manager.metadata_summary()
+        assert "- brainstorming: Use when creating" in summary
+        assert "- debugging: Use when bugs found" in summary
+
+    def test_get_skill_by_name(self, tmp_path: Path):
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        self._create_skill_file(skills_dir, "brainstorming.md", "brainstorming", "Use when creating")
+
+        manager = SkillManager(skills_dir)
+        manager.load()
+
+        skill = manager.get_skill("brainstorming")
+        assert skill is not None
+        assert skill.name == "brainstorming"
+
+        assert manager.get_skill("nonexistent") is None
+
+    def test_empty_directory_loads_nothing(self, tmp_path: Path):
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        manager = SkillManager(skills_dir)
+        manager.load()
+
+        assert len(manager.skills) == 0
+        assert manager.metadata_summary() == ""
+
+    def test_nonexistent_directory_loads_nothing(self, tmp_path: Path):
+        manager = SkillManager(tmp_path / "does_not_exist")
+        manager.load()
+
+        assert len(manager.skills) == 0
