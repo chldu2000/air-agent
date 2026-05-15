@@ -163,6 +163,17 @@ class Agent:
         tools = self._registry.get_openai_tools() or None
         history: list[dict[str, Any]] = list(messages)
 
+        if self._skill_manager and self._skill_manager.skills:
+            matched = await self._skill_router.match(
+                user_input=messages[-1]["content"],
+                skills=self._skill_manager.skills,
+            )
+            for skill in matched:
+                history.insert(0, {
+                    "role": "system",
+                    "content": f'<skill name="{skill.name}">\n{skill.content}\n</skill>',
+                })
+
         async def _stream_generator():
             for iteration in range(self.config.max_iterations):
                 kwargs: dict[str, Any] = {

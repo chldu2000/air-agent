@@ -298,3 +298,65 @@ class TestAgentSkillsIntegration:
         system_msg = messages[0]["content"]
         assert "brainstorming" in system_msg
         assert "Use when creating" in system_msg
+
+
+class TestStreamingWithSkills:
+    def _create_skill_file(self, directory: Path, filename: str, name: str, description: str, content: str = ""):
+        path = directory / filename
+        path.write_text(
+            f"---\nname: {name}\ndescription: {description}\n---\n{content}\n"
+        )
+
+    @pytest.mark.asyncio
+    async def test_streaming_injects_matched_skills(self, tmp_path: Path):
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        self._create_skill_file(
+            skills_dir, "brainstorming.md", "brainstorming",
+            "Use when creating",
+            "Ask questions one at a time.",
+        )
+
+        config = AgentConfig(
+            model="gpt-4o",
+            api_key="test-key",
+            skills_dir=str(skills_dir),
+        )
+        agent = Agent(config)
+
+        # Mock the routing call (first call) to return brainstorming
+        routing_response = MagicMock()
+        routing_response.choices = [MagicMock()]
+        routing_response.choices[0].message.content = "brainstorming"
+
+        # Mock the streaming response (second call)
+        stream_event_1 = MagicMock()
+        stream_event_1.choices = [MagicMock()]
+        stream_event_1.choices[0].delta.content = "Hello"
+        stream_event_1.choices[0].delta.tool_calls = None
+        stream_event_1.usage = None
+
+        stream_event_2 = MagicMock()
+        stream_event_2.choices = [MagicMock()]
+        stream_event_2.choices[0].delta.content = None
+        stream_event_2.choices[0].delta.tool_calls = None
+        stream_event_2.usage = MagicMock(prompt_tokens=5, completion_tokens=10, total_tokens=15)
+
+        async def mock_stream():
+            yield stream_event_1
+            yield stream_event_2
+
+        with patch.object(agent._client.chat.completions, "create", new_callable=AsyncMock) as mock_create:
+            mock_create.side_effect = [routing_response, mock_stream()]
+            stream = await agent.run("I want to brainstorm", stream=True)
+            events = []
+            async for event in stream:
+                events.append(event)
+
+        # Verify routing happened
+        assert mock_create.call_count == 2
+        # The streaming call should have skill content in its messages
+        streaming_call = mock_create.call_args_list[1]
+        messages = streaming_call.kwargs["messages"]
+        system_msgs = [m for m in messages if m["role"] == "system"]
+        assert any("brainstorming" in m["content"] for m in system_msgs)
