@@ -8,6 +8,8 @@ from openai import AsyncOpenAI
 
 from air_agent.config import AgentConfig, SubagentConfig
 from air_agent.mcp.client import MCPClient
+from air_agent.skills.manager import SkillManager
+from air_agent.skills.router import LLMSkillRouter
 from air_agent.subagent import delegate as _delegate
 from air_agent.tools.registry import ToolRegistry
 from air_agent.types import Response, StreamEvent, SubagentResult, TokenUsage
@@ -26,6 +28,12 @@ class Agent:
         self._registry = ToolRegistry()
         self._mcp_clients: list[MCPClient] = []
         self._conversations: dict[str, list[dict[str, Any]]] = {}
+        self._skill_manager: SkillManager | None = None
+        self._skill_router: LLMSkillRouter | None = None
+        if config.skills_dir:
+            self._skill_manager = SkillManager(config.skills_dir)
+            self._skill_manager.load()
+            self._skill_router = LLMSkillRouter(client=self._client, model=config.model)
 
     def tool(self, name: str | None = None, description: str = ""):
         def decorator(func):
@@ -74,8 +82,13 @@ class Agent:
 
     def _build_messages(self, user_input: str, conversation_id: str | None) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = []
-        if self.config.system_prompt:
-            messages.append({"role": "system", "content": self.config.system_prompt})
+        if self.config.system_prompt or self._skill_manager:
+            system_content = self.config.system_prompt or ""
+            if self._skill_manager:
+                summary = self._skill_manager.metadata_summary()
+                if summary:
+                    system_content += f"\n\n## Available Skills\n{summary}"
+            messages.append({"role": "system", "content": system_content})
         if conversation_id and conversation_id in self._conversations:
             messages.extend(self._conversations[conversation_id])
         messages.append({"role": "user", "content": user_input})
@@ -96,6 +109,17 @@ class Agent:
     async def _run(self, messages: list[dict], conversation_id: str | None) -> Response:
         tools = self._registry.get_openai_tools() or None
         history: list[dict[str, Any]] = list(messages)
+
+        if self._skill_manager and self._skill_manager.skills:
+            matched = await self._skill_router.match(
+                user_input=messages[-1]["content"],
+                skills=self._skill_manager.skills,
+            )
+            for skill in matched:
+                history.insert(0, {
+                    "role": "system",
+                    "content": f'<skill name="{skill.name}">\n{skill.content}\n</skill>',
+                })
 
         for _ in range(self.config.max_iterations):
             kwargs: dict[str, Any] = {

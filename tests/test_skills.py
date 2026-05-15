@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from air_agent.skills.manager import SkillManager
 from air_agent.skills.router import LLMSkillRouter
@@ -231,3 +231,70 @@ class TestLLMSkillRouter:
 
         result = await router.match("test query", skills)
         assert len(result) == 0
+
+
+from air_agent.agent import Agent
+from air_agent.config import AgentConfig
+
+
+class TestAgentSkillsIntegration:
+    def _create_skill_file(self, directory: Path, filename: str, name: str, description: str, content: str = ""):
+        path = directory / filename
+        path.write_text(
+            f"---\nname: {name}\ndescription: {description}\n---\n{content}\n"
+        )
+
+    def test_agent_initializes_skill_manager(self, tmp_path: Path):
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        self._create_skill_file(skills_dir, "test.md", "test-skill", "Use when testing")
+
+        config = AgentConfig(model="gpt-4o", api_key="test-key", skills_dir=str(skills_dir))
+        agent = Agent(config)
+
+        assert agent._skill_manager is not None
+        assert len(agent._skill_manager.skills) == 1
+
+    def test_agent_without_skills_dir_has_no_manager(self):
+        config = AgentConfig(model="gpt-4o", api_key="test-key")
+        agent = Agent(config)
+        assert agent._skill_manager is None
+
+    @pytest.mark.asyncio
+    async def test_skill_metadata_injected_into_system_prompt(self, tmp_path: Path):
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        self._create_skill_file(skills_dir, "a.md", "brainstorming", "Use when creating")
+        self._create_skill_file(skills_dir, "b.md", "debugging", "Use when bugs")
+
+        config = AgentConfig(
+            model="gpt-4o",
+            api_key="test-key",
+            system_prompt="You are helpful.",
+            skills_dir=str(skills_dir),
+        )
+        agent = Agent(config)
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "done"
+        mock_response.choices[0].message.tool_calls = None
+        mock_response.usage = MagicMock(
+            prompt_tokens=10, completion_tokens=20, total_tokens=30
+        )
+
+        with patch.object(agent._client.chat.completions, "create", new_callable=AsyncMock) as mock_create:
+            # First call: skill routing; second call: actual response
+            routing_response = MagicMock()
+            routing_response.choices = [MagicMock()]
+            routing_response.choices[0].message.content = "none"
+            mock_create.side_effect = [routing_response, mock_response]
+
+            result = await agent.run("hello")
+
+        # The second call (actual response) should contain skill metadata in messages
+        actual_call = mock_create.call_args_list[1]
+        messages = actual_call.kwargs["messages"]
+        system_msg = messages[0]["content"]
+        assert "brainstorming" in system_msg
+        assert "Use when creating" in system_msg
