@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import pytest
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 from air_agent.skills.manager import SkillManager
+from air_agent.skills.router import LLMSkillRouter
 from air_agent.skills.skill import Skill, parse_skill_file
 
 
@@ -173,3 +175,59 @@ class TestSkillManager:
         manager.load()
 
         assert len(manager.skills) == 0
+
+
+class TestLLMSkillRouter:
+    def _make_skill(self, name: str, description: str) -> Skill:
+        return Skill(
+            name=name,
+            description=description,
+            content=f"# {name}\nInstructions for {name}",
+            path=Path("/fake") / f"{name}.md",
+        )
+
+    @pytest.mark.asyncio
+    async def test_match_returns_relevant_skills(self):
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "brainstorming, debugging"
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+
+        router = LLMSkillRouter(client=mock_client, model="gpt-4o")
+        skills = [
+            self._make_skill("brainstorming", "Use when creating"),
+            self._make_skill("debugging", "Use when bugs"),
+            self._make_skill("deploy", "Use when deploying"),
+        ]
+
+        result = await router.match("I need to brainstorm ideas", skills)
+        names = {s.name for s in result}
+        assert "brainstorming" in names
+        assert "debugging" in names
+        assert "deploy" not in names
+
+    @pytest.mark.asyncio
+    async def test_match_returns_empty_when_no_match(self):
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "none"
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+
+        router = LLMSkillRouter(client=mock_client, model="gpt-4o")
+        skills = [self._make_skill("deploy", "Use when deploying")]
+
+        result = await router.match("Tell me a joke", skills)
+        assert len(result) == 0
+
+    @pytest.mark.asyncio
+    async def test_match_returns_empty_on_llm_error(self):
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(side_effect=Exception("API error"))
+
+        router = LLMSkillRouter(client=mock_client, model="gpt-4o")
+        skills = [self._make_skill("test", "Use when testing")]
+
+        result = await router.match("test query", skills)
+        assert len(result) == 0
