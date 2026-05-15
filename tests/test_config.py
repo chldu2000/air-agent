@@ -157,3 +157,25 @@ class TestFromEnv:
         config = AgentConfig.from_env()
 
         assert config.api_key == "sk-openai-fallback"
+
+
+class TestSkillsDirConfig:
+    def test_skills_dir_from_json(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "model": "gpt-4o",
+            "skills_dir": "/path/to/skills",
+        }))
+        config = AgentConfig.from_json(str(config_file))
+        assert config.skills_dir == "/path/to/skills"
+
+    def test_skills_dir_default_is_none(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"model": "gpt-4o"}))
+        config = AgentConfig.from_json(str(config_file))
+        assert config.skills_dir is None
+
+    def test_skills_dir_from_env(self, monkeypatch):
+        monkeypatch.setenv("AIR_SKILLS_DIR", "/my/skills")
+        config = AgentConfig.from_env()
+        assert config.skills_dir == "/my/skills"

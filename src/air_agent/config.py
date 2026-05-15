@@ -53,6 +53,7 @@ class AgentConfig:
     tool_timeout: float = 30.0
     mcp_servers: list[MCPServerStdio | MCPServerSSE] = field(default_factory=list)
     default_headers: dict[str, str] | None = None
+    skills_dir: str | None = None
 
     def __post_init__(self):
         if self.api_key is None:
@@ -80,6 +81,7 @@ class AgentConfig:
             f"{prefix}SYSTEM_PROMPT": ("system_prompt", str),
             f"{prefix}MAX_ITERATIONS": ("max_iterations", int),
             f"{prefix}TOOL_TIMEOUT": ("tool_timeout", float),
+            f"{prefix}SKILLS_DIR": ("skills_dir", str),
         }
 
         for env_key, (field_name, type_) in env_map.items():
