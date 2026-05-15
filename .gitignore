@@ -24,3 +24,6 @@ uv.lock
 *.log
 .DS_Store
 .env
+
+.idea/
+.vscode/

@@ -1,5 +1,7 @@
 # air-agent
 
+[中文文档](README_zh.md)
+
 A lightweight Python AI Agent library. Built on the OpenAI Chat Completions API with support for tool-calling loops, MCP Server connections, parallel subagents, and streaming output. Designed to be imported directly by other Python projects.
 
 ## Installation
@@ -116,6 +118,52 @@ Supported environment variables:
 | `AIR_TOOL_TIMEOUT` | float | Tool call timeout in seconds |
 | `AIR_MCP_SERVERS` | JSON | MCP server list |
 | `AIR_DEFAULT_HEADERS` | JSON | Custom request headers |
+| `AIR_SKILLS_DIR` | str | Skills directory path |
+
+### Skills
+
+Load skill instructions from a directory of Markdown files. Skills use YAML frontmatter for metadata and Markdown body for instructions.
+
+**Skill file format** (`skills/brainstorming.md`):
+
+```markdown
+---
+name: brainstorming
+description: Use when starting creative work or exploring ideas
+---
+
+# Brainstorming
+
+Ask questions one at a time to refine the idea.
+```
+
+**Usage:**
+
+```python
+from air_agent import Agent, AgentConfig
+
+config = AgentConfig(
+    model="gpt-4o",
+    skills_dir="./skills",  # directory containing skill .md files
+)
+agent = Agent(config)
+response = await agent.run("I want to brainstorm a new feature")
+```
+
+Skills work via progressive prompt injection:
+- All skill metadata (name + description) is always included in the system prompt
+- When a user query matches relevant skills, the full skill content is injected into the conversation context
+- Skill matching uses an LLM-based router by default; you can provide a custom `SkillRouter` implementation
+
+**Custom router:**
+
+```python
+from air_agent import SkillRouter
+
+class KeywordRouter(SkillRouter):
+    async def match(self, user_input: str, skills: list) -> list:
+        return [s for s in skills if s.name in user_input.lower()]
+```
 
 ### Connect to MCP Servers
 
@@ -167,6 +215,7 @@ AgentConfig(
     max_iterations=20,           # Max tool-calling rounds
     tool_timeout=30.0,           # Single tool call timeout (seconds)
     mcp_servers=[],              # MCP server list
+    skills_dir=None,             # Skills directory path
 )
 ```
 
@@ -184,6 +233,10 @@ src/air_agent/
 ├── mcp/
 │   ├── client.py        # MCP client (stdio + streamable_http)
 │   └── tool_adapter.py  # MCP tool → OpenAI format adapter
+├── skills/
+│   ├── skill.py         # Skill dataclass + SKILL.md parser
+│   ├── manager.py       # SkillManager (directory scanning)
+│   └── router.py        # SkillRouter ABC + LLMSkillRouter
 └── subagent.py          # Parallel subagent manager
 ```
 

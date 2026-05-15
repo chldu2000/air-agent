@@ -1,5 +1,7 @@
 # air-agent
 
+[English](README.md)
+
 轻量级 Python AI Agent 库。基于 OpenAI Chat Completions API，支持工具调用循环、MCP Server 连接、并行 Subagent 和流式输出。设计为可被其他 Python 项目直接引用。
 
 ## 安装
@@ -116,6 +118,53 @@ agent = Agent(config)
 | `AIR_TOOL_TIMEOUT` | float | 工具调用超时（秒） |
 | `AIR_MCP_SERVERS` | JSON | MCP server 列表 |
 | `AIR_DEFAULT_HEADERS` | JSON | 自定义请求头 |
+| `AIR_SKILLS_DIR` | str | Skills 文件目录路径 |
+
+### Skills（技能系统）
+
+从 Markdown 文件目录加载技能指令。Skills 使用 YAML frontmatter 定义元数据，Markdown 正文定义指令内容。
+
+**Skill 文件格式**（`skills/brainstorming.md`）：
+
+```markdown
+---
+name: brainstorming
+description: 在进行创意工作或探索想法时使用
+---
+
+# 头脑风暴
+
+每次只问一个问题来逐步细化想法。
+```
+
+**使用方式：**
+
+```python
+from air_agent import Agent, AgentConfig
+
+config = AgentConfig(
+    model="gpt-4o",
+    skills_dir="./skills",  # 包含 skill .md 文件的目录
+)
+agent = Agent(config)
+response = await agent.run("我想头脑风暴一个新功能")
+```
+
+Skills 通过渐进式 Prompt 注入工作：
+
+- 所有 Skill 元数据（名称 + 描述）始终包含在系统提示词中
+- 当用户查询匹配到相关 Skill 时，完整 Skill 内容会被注入到对话上下文中
+- Skill 匹配默认使用基于 LLM 的路由器；你可以提供自定义的 `SkillRouter` 实现
+
+**自定义路由器：**
+
+```python
+from air_agent import SkillRouter
+
+class KeywordRouter(SkillRouter):
+    async def match(self, user_input: str, skills: list) -> list:
+        return [s for s in skills if s.name in user_input.lower()]
+```
 
 ### 连接 MCP Server
 
@@ -167,6 +216,7 @@ AgentConfig(
     max_iterations=20,           # 工具调用最大轮次
     tool_timeout=30.0,           # 单次工具调用超时（秒）
     mcp_servers=[],              # MCP server 列表
+    skills_dir=None,             # Skills 文件目录路径
 )
 ```
 
@@ -184,6 +234,10 @@ src/air_agent/
 ├── mcp/
 │   ├── client.py        # MCP 客户端（stdio + streamable_http）
 │   └── tool_adapter.py  # MCP tool → OpenAI 格式转换
+├── skills/
+│   ├── skill.py         # Skill 数据类 + SKILL.md 解析器
+│   ├── manager.py       # SkillManager（目录扫描）
+│   └── router.py        # SkillRouter 抽象类 + LLMSkillRouter
 └── subagent.py          # 并行 subagent 管理器
 ```
 
