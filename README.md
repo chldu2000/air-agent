@@ -122,9 +122,23 @@ Supported environment variables:
 
 ### Skills
 
-Load skill instructions from a directory of Markdown files. Skills use YAML frontmatter for metadata and Markdown body for instructions.
+Load skill instructions from a directory of skill folders. Each skill is a directory (kebab-case named) containing a `SKILL.md` file with YAML frontmatter for metadata and Markdown body for instructions.
 
-**Skill file format** (`skills/brainstorming.md`):
+**Directory structure:**
+
+```text
+skills/
+├── brainstorming/
+│   └── SKILL.md              # Required: metadata + instructions
+├── data-analysis/
+│   ├── SKILL.md
+│   ├── scripts/              # Optional: executable scripts
+│   │   └── process_data.py
+│   └── references/           # Optional: templates, schemas
+│       └── data_schema.json
+```
+
+**SKILL.md format** (`skills/brainstorming/SKILL.md`):
 
 ```markdown
 ---
@@ -144,7 +158,7 @@ from air_agent import Agent, AgentConfig
 
 config = AgentConfig(
     model="gpt-4o",
-    skills_dir="./skills",  # directory containing skill .md files
+    skills_dir="./skills",  # directory containing skill subdirectories
 )
 agent = Agent(config)
 response = await agent.run("I want to brainstorm a new feature")

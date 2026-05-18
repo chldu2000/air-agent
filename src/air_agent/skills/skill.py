@@ -10,7 +10,8 @@ class Skill:
     name: str
     description: str
     content: str
-    path: Path
+    path: Path          # Path to the SKILL.md file
+    skill_dir: Path     # Directory containing SKILL.md, scripts/, references/
 
 
 def parse_skill_file(path: Path) -> Skill | None:
@@ -45,4 +46,5 @@ def parse_skill_file(path: Path) -> Skill | None:
         description=description,
         content=body.strip(),
         path=Path(path),
+        skill_dir=Path(path).parent,
     )

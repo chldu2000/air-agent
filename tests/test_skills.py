@@ -11,7 +11,9 @@ from air_agent.skills.skill import Skill, parse_skill_file
 
 class TestParseSkillFile:
     def test_valid_skill_file(self, tmp_path: Path):
-        skill_file = tmp_path / "brainstorming.md"
+        skill_dir = tmp_path / "brainstorming"
+        skill_dir.mkdir()
+        skill_file = skill_dir / "SKILL.md"
         skill_file.write_text(
             "---\n"
             "name: brainstorming\n"
@@ -27,15 +29,20 @@ class TestParseSkillFile:
         assert skill.description == "Use when starting creative work"
         assert "Ask questions one at a time." in skill.content
         assert skill.path == skill_file
+        assert skill.skill_dir == skill_dir
 
     def test_missing_frontmatter_returns_none(self, tmp_path: Path):
-        skill_file = tmp_path / "no_frontmatter.md"
+        skill_dir = tmp_path / "no-frontmatter"
+        skill_dir.mkdir()
+        skill_file = skill_dir / "SKILL.md"
         skill_file.write_text("# Just a heading\n\nSome text.\n")
         skill = parse_skill_file(skill_file)
         assert skill is None
 
     def test_missing_name_returns_none(self, tmp_path: Path):
-        skill_file = tmp_path / "no_name.md"
+        skill_dir = tmp_path / "no-name"
+        skill_dir.mkdir()
+        skill_file = skill_dir / "SKILL.md"
         skill_file.write_text(
             "---\n"
             "description: Use when something\n"
@@ -46,7 +53,9 @@ class TestParseSkillFile:
         assert skill is None
 
     def test_missing_description_returns_none(self, tmp_path: Path):
-        skill_file = tmp_path / "no_desc.md"
+        skill_dir = tmp_path / "no-desc"
+        skill_dir.mkdir()
+        skill_file = skill_dir / "SKILL.md"
         skill_file.write_text(
             "---\n"
             "name: some-skill\n"
@@ -57,7 +66,9 @@ class TestParseSkillFile:
         assert skill is None
 
     def test_empty_content(self, tmp_path: Path):
-        skill_file = tmp_path / "empty_body.md"
+        skill_dir = tmp_path / "empty"
+        skill_dir.mkdir()
+        skill_file = skill_dir / "SKILL.md"
         skill_file.write_text(
             "---\n"
             "name: empty\n"
@@ -70,7 +81,9 @@ class TestParseSkillFile:
         assert skill.content == ""
 
     def test_multiline_content(self, tmp_path: Path):
-        skill_file = tmp_path / "multi.md"
+        skill_dir = tmp_path / "multi"
+        skill_dir.mkdir()
+        skill_file = skill_dir / "SKILL.md"
         skill_file.write_text(
             "---\n"
             "name: multi\n"
@@ -90,17 +103,19 @@ class TestParseSkillFile:
 
 
 class TestSkillManager:
-    def _create_skill_file(self, directory: Path, filename: str, name: str, description: str, content: str = ""):
-        path = directory / filename
-        path.write_text(
-            f"---\nname: {name}\ndescription: {description}\n---\n{content}\n"
+    def _create_skill(self, skills_dir: Path, skill_name: str, description: str, content: str = ""):
+        skill_dir = skills_dir / skill_name
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {skill_name}\ndescription: {description}\n---\n{content}\n"
         )
+        return skill_dir
 
-    def test_load_scans_directory(self, tmp_path: Path):
+    def test_load_scans_subdirectories(self, tmp_path: Path):
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
-        self._create_skill_file(skills_dir, "brainstorming.md", "brainstorming", "Use when creating")
-        self._create_skill_file(skills_dir, "debugging.md", "debugging", "Use when bugs")
+        self._create_skill(skills_dir, "brainstorming", "Use when creating")
+        self._create_skill(skills_dir, "debugging", "Use when bugs")
 
         manager = SkillManager(skills_dir)
         manager.load()
@@ -110,11 +125,11 @@ class TestSkillManager:
         assert "brainstorming" in names
         assert "debugging" in names
 
-    def test_load_skips_invalid_files(self, tmp_path: Path):
+    def test_load_skips_directories_without_skill_md(self, tmp_path: Path):
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
-        self._create_skill_file(skills_dir, "valid.md", "valid", "Use when valid")
-        (skills_dir / "invalid.md").write_text("# No frontmatter\n")
+        self._create_skill(skills_dir, "valid", "Use when valid")
+        (skills_dir / "no-skill-md").mkdir()
 
         manager = SkillManager(skills_dir)
         manager.load()
@@ -122,10 +137,24 @@ class TestSkillManager:
         assert len(manager.skills) == 1
         assert manager.skills[0].name == "valid"
 
-    def test_load_ignores_non_md_files(self, tmp_path: Path):
+    def test_load_skips_invalid_skill_md(self, tmp_path: Path):
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
-        self._create_skill_file(skills_dir, "skill.md", "skill", "Use when needed")
+        self._create_skill(skills_dir, "valid", "Use when valid")
+        invalid_dir = skills_dir / "invalid"
+        invalid_dir.mkdir()
+        (invalid_dir / "SKILL.md").write_text("# No frontmatter\n")
+
+        manager = SkillManager(skills_dir)
+        manager.load()
+
+        assert len(manager.skills) == 1
+        assert manager.skills[0].name == "valid"
+
+    def test_load_ignores_flat_files(self, tmp_path: Path):
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        self._create_skill(skills_dir, "my-skill", "Use when needed")
         (skills_dir / "notes.txt").write_text("Not a skill file\n")
 
         manager = SkillManager(skills_dir)
@@ -136,8 +165,8 @@ class TestSkillManager:
     def test_metadata_summary(self, tmp_path: Path):
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
-        self._create_skill_file(skills_dir, "a.md", "brainstorming", "Use when creating")
-        self._create_skill_file(skills_dir, "b.md", "debugging", "Use when bugs found")
+        self._create_skill(skills_dir, "brainstorming", "Use when creating")
+        self._create_skill(skills_dir, "debugging", "Use when bugs found")
 
         manager = SkillManager(skills_dir)
         manager.load()
@@ -149,7 +178,7 @@ class TestSkillManager:
     def test_get_skill_by_name(self, tmp_path: Path):
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
-        self._create_skill_file(skills_dir, "brainstorming.md", "brainstorming", "Use when creating")
+        self._create_skill(skills_dir, "brainstorming", "Use when creating")
 
         manager = SkillManager(skills_dir)
         manager.load()
@@ -179,11 +208,13 @@ class TestSkillManager:
 
 class TestLLMSkillRouter:
     def _make_skill(self, name: str, description: str) -> Skill:
+        fake_dir = Path("/fake") / name
         return Skill(
             name=name,
             description=description,
             content=f"# {name}\nInstructions for {name}",
-            path=Path("/fake") / f"{name}.md",
+            path=fake_dir / "SKILL.md",
+            skill_dir=fake_dir,
         )
 
     @pytest.mark.asyncio
@@ -238,16 +269,17 @@ from air_agent.config import AgentConfig
 
 
 class TestAgentSkillsIntegration:
-    def _create_skill_file(self, directory: Path, filename: str, name: str, description: str, content: str = ""):
-        path = directory / filename
-        path.write_text(
-            f"---\nname: {name}\ndescription: {description}\n---\n{content}\n"
+    def _create_skill(self, skills_dir: Path, skill_name: str, description: str, content: str = ""):
+        skill_dir = skills_dir / skill_name
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {skill_name}\ndescription: {description}\n---\n{content}\n"
         )
 
     def test_agent_initializes_skill_manager(self, tmp_path: Path):
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
-        self._create_skill_file(skills_dir, "test.md", "test-skill", "Use when testing")
+        self._create_skill(skills_dir, "test-skill", "Use when testing")
 
         config = AgentConfig(model="gpt-4o", api_key="test-key", skills_dir=str(skills_dir))
         agent = Agent(config)
@@ -264,8 +296,8 @@ class TestAgentSkillsIntegration:
     async def test_skill_metadata_injected_into_system_prompt(self, tmp_path: Path):
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
-        self._create_skill_file(skills_dir, "a.md", "brainstorming", "Use when creating")
-        self._create_skill_file(skills_dir, "b.md", "debugging", "Use when bugs")
+        self._create_skill(skills_dir, "brainstorming", "Use when creating")
+        self._create_skill(skills_dir, "debugging", "Use when bugs")
 
         config = AgentConfig(
             model="gpt-4o",
@@ -301,18 +333,19 @@ class TestAgentSkillsIntegration:
 
 
 class TestStreamingWithSkills:
-    def _create_skill_file(self, directory: Path, filename: str, name: str, description: str, content: str = ""):
-        path = directory / filename
-        path.write_text(
-            f"---\nname: {name}\ndescription: {description}\n---\n{content}\n"
+    def _create_skill(self, skills_dir: Path, skill_name: str, description: str, content: str = ""):
+        skill_dir = skills_dir / skill_name
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {skill_name}\ndescription: {description}\n---\n{content}\n"
         )
 
     @pytest.mark.asyncio
     async def test_streaming_injects_matched_skills(self, tmp_path: Path):
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
-        self._create_skill_file(
-            skills_dir, "brainstorming.md", "brainstorming",
+        self._create_skill(
+            skills_dir, "brainstorming",
             "Use when creating",
             "Ask questions one at a time.",
         )

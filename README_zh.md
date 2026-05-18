@@ -122,9 +122,23 @@ agent = Agent(config)
 
 ### Skills（技能系统）
 
-从 Markdown 文件目录加载技能指令。Skills 使用 YAML frontmatter 定义元数据，Markdown 正文定义指令内容。
+从技能文件夹目录加载技能指令。每个 Skill 是一个目录（kebab-case 命名），包含 `SKILL.md` 文件，使用 YAML frontmatter 定义元数据，Markdown 正文定义指令内容。
 
-**Skill 文件格式**（`skills/brainstorming.md`）：
+**目录结构：**
+
+```text
+skills/
+├── brainstorming/
+│   └── SKILL.md              # 必需：元数据 + 指令
+├── data-analysis/
+│   ├── SKILL.md
+│   ├── scripts/              # 可选：可执行脚本
+│   │   └── process_data.py
+│   └── references/           # 可选：模板、Schema 等参考资料
+│       └── data_schema.json
+```
+
+**SKILL.md 格式**（`skills/brainstorming/SKILL.md`）：
 
 ```markdown
 ---
@@ -144,7 +158,7 @@ from air_agent import Agent, AgentConfig
 
 config = AgentConfig(
     model="gpt-4o",
-    skills_dir="./skills",  # 包含 skill .md 文件的目录
+    skills_dir="./skills",  # 包含 skill 子目录的目录
 )
 agent = Agent(config)
 response = await agent.run("我想头脑风暴一个新功能")

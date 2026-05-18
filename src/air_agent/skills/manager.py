@@ -14,17 +14,23 @@ class SkillManager:
         self.skills: list[Skill] = []
 
     def load(self) -> None:
-        """Scan skills_dir for .md files and parse them."""
+        """Scan skills_dir for subdirectories containing SKILL.md files."""
         self.skills.clear()
 
         if not self.skills_dir.is_dir():
             logger.warning("Skills directory does not exist: %s", self.skills_dir)
             return
 
-        for path in sorted(self.skills_dir.glob("*.md")):
-            skill = parse_skill_file(path)
+        for entry in sorted(self.skills_dir.iterdir()):
+            if not entry.is_dir():
+                continue
+            skill_file = entry / "SKILL.md"
+            if not skill_file.is_file():
+                logger.warning("Skipping directory without SKILL.md: %s", entry)
+                continue
+            skill = parse_skill_file(skill_file)
             if skill is None:
-                logger.warning("Skipping invalid skill file: %s", path)
+                logger.warning("Skipping invalid SKILL.md: %s", skill_file)
                 continue
             self.skills.append(skill)
 
