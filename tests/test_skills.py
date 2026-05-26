@@ -110,6 +110,7 @@ class TestSkillManager:
             f"---\nname: {skill_name}\ndescription: {description}\n---\n{content}\n"
         )
         return skill_dir
+        return skill_dir
 
     def test_load_scans_subdirectories(self, tmp_path: Path):
         skills_dir = tmp_path / "skills"
@@ -275,6 +276,7 @@ class TestAgentSkillsIntegration:
         (skill_dir / "SKILL.md").write_text(
             f"---\nname: {skill_name}\ndescription: {description}\n---\n{content}\n"
         )
+        return skill_dir
 
     def test_agent_initializes_skill_manager(self, tmp_path: Path):
         skills_dir = tmp_path / "skills"
@@ -331,6 +333,42 @@ class TestAgentSkillsIntegration:
         assert "brainstorming" in system_msg
         assert "Use when creating" in system_msg
 
+    @pytest.mark.asyncio
+    async def test_skill_path_injected_into_context(self, tmp_path: Path):
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        skill_dir = self._create_skill(skills_dir, "test-skill", "Use when testing", "Do the thing.")
+
+        config = AgentConfig(
+            model="gpt-4o",
+            api_key="test-key",
+            skills_dir=str(skills_dir),
+        )
+        agent = Agent(config)
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "done"
+        mock_response.choices[0].message.tool_calls = None
+        mock_response.usage = MagicMock(
+            prompt_tokens=10, completion_tokens=20, total_tokens=30
+        )
+
+        with patch.object(agent._client.chat.completions, "create", new_callable=AsyncMock) as mock_create:
+            routing_response = MagicMock()
+            routing_response.choices = [MagicMock()]
+            routing_response.choices[0].message.content = "test-skill"
+            mock_create.side_effect = [routing_response, mock_response]
+
+            await agent.run("test")
+
+        # Matched skill should include path attribute
+        actual_call = mock_create.call_args_list[1]
+        messages = actual_call.kwargs["messages"]
+        skill_msgs = [m for m in messages if "skill name" in m.get("content", "")]
+        assert len(skill_msgs) >= 1
+        assert f'path="{skill_dir}"' in skill_msgs[0]["content"]
+
 
 class TestStreamingWithSkills:
     def _create_skill(self, skills_dir: Path, skill_name: str, description: str, content: str = ""):
@@ -339,6 +377,7 @@ class TestStreamingWithSkills:
         (skill_dir / "SKILL.md").write_text(
             f"---\nname: {skill_name}\ndescription: {description}\n---\n{content}\n"
         )
+        return skill_dir
 
     @pytest.mark.asyncio
     async def test_streaming_injects_matched_skills(self, tmp_path: Path):

@@ -179,6 +179,72 @@ class KeywordRouter(SkillRouter):
         return [s for s in skills if s.name in user_input.lower()]
 ```
 
+### Built-in Tools
+
+Agent comes with a minimal built-in toolset for file system operations and shell commands. These are enabled by default and registered automatically.
+
+| Tool | Description |
+| ---- | ----------- |
+| `read_file` | Read file contents with offset/limit support |
+| `write_file` | Write content to a file, auto-create directories |
+| `list_directory` | List directory entries with type and size info |
+| `find_files` | Find files matching a glob pattern |
+| `grep` | Search file contents with regex |
+| `run_shell` | Execute shell commands |
+
+**Default usage (no configuration needed):**
+
+```python
+from air_agent import Agent, AgentConfig
+
+agent = Agent(AgentConfig(model="gpt-4o", api_key="sk-xxx"))
+# read_file, write_file, list_directory, find_files, grep, run_shell are all available
+```
+
+**Configuration:**
+
+```python
+from air_agent import BuiltinToolsConfig
+
+# Disable built-in tools entirely
+config = AgentConfig(model="gpt-4o", builtin_tools=BuiltinToolsConfig(enabled=False))
+
+# Select specific tools only
+config = AgentConfig(model="gpt-4o",
+    builtin_tools=BuiltinToolsConfig(tools=["read_file", "grep"]))
+
+# Custom sandbox and limits
+config = AgentConfig(model="gpt-4o",
+    builtin_tools=BuiltinToolsConfig(
+        allowed_directories=["/project"],
+        max_read_size=500_000,
+        max_grep_results=50,
+        default_timeout=60.0,
+    ))
+```
+
+**Security features:**
+
+- **Path sandbox** — file tools only access paths within `allowed_directories` (defaults to cwd)
+- **Command blocklist** — dangerous commands (`rm -rf /`, `sudo`, `mkfs`, etc.) are blocked
+- **Result limits** — configurable caps on find/grep/list results and shell output
+- **Truncation notices** — when results are truncated, the agent is informed so it can refine queries
+
+**`BuiltinToolsConfig` fields:**
+
+| Field | Type | Default | Description |
+| ----- | ---- | ------- | ----------- |
+| `enabled` | bool | `True` | Master switch |
+| `tools` | list | `None` | Tool selection (`None` = all) |
+| `allowed_directories` | list | `[]` | Sandbox dirs (empty = cwd) |
+| `max_read_size` | int | `1000000` | Max file read size in bytes |
+| `default_timeout` | float | `30.0` | Shell command timeout |
+| `blocked_commands` | list | [...] | Blocked command patterns |
+| `max_find_results` | int | `200` | Find results cap |
+| `max_grep_results` | int | `100` | Grep matches cap |
+| `max_list_entries` | int | `500` | Directory listing cap |
+| `max_output_bytes` | int | `50000` | Shell output truncation |
+
 ### Connect to MCP Servers
 
 ```python
@@ -230,6 +296,7 @@ AgentConfig(
     tool_timeout=30.0,           # Single tool call timeout (seconds)
     mcp_servers=[],              # MCP server list
     skills_dir=None,             # Skills directory path
+    builtin_tools=None,          # BuiltinToolsConfig or None for defaults
 )
 ```
 
@@ -243,7 +310,12 @@ src/air_agent/
 ├── types.py             # Response, StreamEvent, SubagentResult
 ├── tools/
 │   ├── base.py          # Tool dataclass
-│   └── registry.py      # Tool registry
+│   ├── registry.py      # Tool registry
+│   └── builtin/
+│       ├── config.py    # BuiltinToolsConfig
+│       ├── _permissions.py  # Path sandbox + command blocklist
+│       ├── file_tools.py    # read, write, list, find, grep
+│       └── shell_tools.py   # run_shell
 ├── mcp/
 │   ├── client.py        # MCP client (stdio + streamable_http)
 │   └── tool_adapter.py  # MCP tool → OpenAI format adapter

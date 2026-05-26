@@ -180,6 +180,72 @@ class KeywordRouter(SkillRouter):
         return [s for s in skills if s.name in user_input.lower()]
 ```
 
+### 内置工具
+
+Agent 自带最小内置工具集，支持文件系统操作和 Shell 命令执行。默认启用，自动注册。
+
+| 工具 | 说明 |
+| ---- | ---- |
+| `read_file` | 读取文件内容，支持 offset/limit |
+| `write_file` | 写入文件，自动创建目录 |
+| `list_directory` | 列出目录内容（含类型和大小） |
+| `find_files` | 按 glob 模式查找文件 |
+| `grep` | 正则搜索文件内容 |
+| `run_shell` | 执行 Shell 命令 |
+
+**默认使用（无需配置）：**
+
+```python
+from air_agent import Agent, AgentConfig
+
+agent = Agent(AgentConfig(model="gpt-4o", api_key="sk-xxx"))
+# read_file, write_file, list_directory, find_files, grep, run_shell 均可用
+```
+
+**配置方式：**
+
+```python
+from air_agent import BuiltinToolsConfig
+
+# 完全禁用内置工具
+config = AgentConfig(model="gpt-4o", builtin_tools=BuiltinToolsConfig(enabled=False))
+
+# 只启用部分工具
+config = AgentConfig(model="gpt-4o",
+    builtin_tools=BuiltinToolsConfig(tools=["read_file", "grep"]))
+
+# 自定义沙箱和限制
+config = AgentConfig(model="gpt-4o",
+    builtin_tools=BuiltinToolsConfig(
+        allowed_directories=["/project"],
+        max_read_size=500_000,
+        max_grep_results=50,
+        default_timeout=60.0,
+    ))
+```
+
+**安全机制：**
+
+- **路径沙箱** — 文件工具只能访问 `allowed_directories` 内的路径（默认为当前工作目录）
+- **命令黑名单** — 危险命令（`rm -rf /`、`sudo`、`mkfs` 等）被自动阻止
+- **结果限制** — find/grep/list 结果数量和 shell 输出均可配置上限
+- **截断通知** — 结果被截断时会告知 Agent，便于其调整查询策略
+
+**`BuiltinToolsConfig` 配置项：**
+
+| 字段 | 类型 | 默认值 | 说明 |
+| ---- | ---- | ------ | ---- |
+| `enabled` | bool | `True` | 总开关 |
+| `tools` | list | `None` | 工具选择（`None` = 全部） |
+| `allowed_directories` | list | `[]` | 沙箱目录（空 = 当前工作目录） |
+| `max_read_size` | int | `1000000` | 文件读取大小上限（字节） |
+| `default_timeout` | float | `30.0` | Shell 命令超时时间（秒） |
+| `blocked_commands` | list | [...] | 被阻止的命令模式 |
+| `max_find_results` | int | `200` | find 结果上限 |
+| `max_grep_results` | int | `100` | grep 匹配上限 |
+| `max_list_entries` | int | `500` | 目录列表条目上限 |
+| `max_output_bytes` | int | `50000` | Shell 输出截断阈值 |
+
 ### 连接 MCP Server
 
 ```python
@@ -231,6 +297,7 @@ AgentConfig(
     tool_timeout=30.0,           # 单次工具调用超时（秒）
     mcp_servers=[],              # MCP server 列表
     skills_dir=None,             # Skills 文件目录路径
+    builtin_tools=None,          # BuiltinToolsConfig 或 None 使用默认值
 )
 ```
 
@@ -244,7 +311,12 @@ src/air_agent/
 ├── types.py             # Response, StreamEvent, SubagentResult
 ├── tools/
 │   ├── base.py          # Tool 数据类
-│   └── registry.py      # 工具注册中心
+│   ├── registry.py      # 工具注册中心
+│   └── builtin/
+│       ├── config.py    # BuiltinToolsConfig
+│       ├── _permissions.py  # 路径沙箱 + 命令黑名单
+│       ├── file_tools.py    # 读写、列表、查找、grep
+│       └── shell_tools.py   # run_shell
 ├── mcp/
 │   ├── client.py        # MCP 客户端（stdio + streamable_http）
 │   └── tool_adapter.py  # MCP tool → OpenAI 格式转换

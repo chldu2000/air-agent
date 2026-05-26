@@ -8,6 +8,8 @@ from openai import AsyncOpenAI
 
 from air_agent.config import AgentConfig, SubagentConfig
 from air_agent.mcp.client import MCPClient
+from air_agent.tools.builtin import register_builtin_tools
+from air_agent.tools.builtin.config import BuiltinToolsConfig
 from air_agent.skills.manager import SkillManager
 from air_agent.skills.router import LLMSkillRouter
 from air_agent.subagent import delegate as _delegate
@@ -26,6 +28,8 @@ class Agent:
             default_headers=config.default_headers,
         )
         self._registry = ToolRegistry()
+        builtin_cfg = config.builtin_tools or BuiltinToolsConfig()
+        register_builtin_tools(self._registry, builtin_cfg)
         self._mcp_clients: list[MCPClient] = []
         self._conversations: dict[str, list[dict[str, Any]]] = {}
         self._skill_manager: SkillManager | None = None
@@ -116,9 +120,11 @@ class Agent:
                 skills=self._skill_manager.skills,
             )
             for skill in matched:
+                header = f'<skill name="{skill.name}" path="{skill.skill_dir}">\n'
+                header += f"{skill.content}\n</skill>"
                 history.insert(0, {
                     "role": "system",
-                    "content": f'<skill name="{skill.name}">\n{skill.content}\n</skill>',
+                    "content": header,
                 })
 
         for _ in range(self.config.max_iterations):
@@ -169,9 +175,11 @@ class Agent:
                 skills=self._skill_manager.skills,
             )
             for skill in matched:
+                header = f'<skill name="{skill.name}" path="{skill.skill_dir}">\n'
+                header += f"{skill.content}\n</skill>"
                 history.insert(0, {
                     "role": "system",
-                    "content": f'<skill name="{skill.name}">\n{skill.content}\n</skill>',
+                    "content": header,
                 })
 
         async def _stream_generator():

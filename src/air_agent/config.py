@@ -5,6 +5,8 @@ import os
 from dataclasses import dataclass, field
 from typing import Any
 
+from air_agent.tools.builtin.config import BuiltinToolsConfig
+
 
 @dataclass
 class MCPServerStdio:
@@ -54,6 +56,7 @@ class AgentConfig:
     mcp_servers: list[MCPServerStdio | MCPServerSSE] = field(default_factory=list)
     default_headers: dict[str, str] | None = None
     skills_dir: str | None = None
+    builtin_tools: BuiltinToolsConfig | None = None
 
     def __post_init__(self):
         if self.api_key is None:
@@ -65,8 +68,12 @@ class AgentConfig:
             data = json.load(f)
 
         mcp_servers = [_parse_mcp_server(s) for s in data.pop("mcp_servers", [])]
+        builtin_raw = data.pop("builtin_tools", None)
         field_names = {f.name for f in cls.__dataclass_fields__.values()}
         kwargs = {k: v for k, v in data.items() if k in field_names}
+
+        if builtin_raw and isinstance(builtin_raw, dict):
+            kwargs["builtin_tools"] = BuiltinToolsConfig.from_dict(builtin_raw)
 
         return cls(mcp_servers=mcp_servers, **kwargs)
 
@@ -96,5 +103,9 @@ class AgentConfig:
         headers_raw = os.environ.get(f"{prefix}DEFAULT_HEADERS")
         if headers_raw:
             kwargs["default_headers"] = json.loads(headers_raw)
+
+        builtin_raw = os.environ.get(f"{prefix}BUILTIN_TOOLS")
+        if builtin_raw:
+            kwargs["builtin_tools"] = BuiltinToolsConfig.from_dict(json.loads(builtin_raw))
 
         return cls(**kwargs)

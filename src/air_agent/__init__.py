@@ -6,6 +6,7 @@ from air_agent.agent import Agent
 from air_agent.skills.skill import Skill
 from air_agent.skills.manager import SkillManager
 from air_agent.skills.router import SkillRouter, LLMSkillRouter
+from air_agent.tools.builtin.config import BuiltinToolsConfig
 
 __all__ = [
     "Agent",
@@ -20,4 +21,5 @@ __all__ = [
     "SkillManager",
     "SkillRouter",
     "LLMSkillRouter",
+    "BuiltinToolsConfig",
 ]
