@@ -131,6 +131,38 @@ async def test_execute_with_result_invalid_arguments():
 
 
 @pytest.mark.asyncio
+async def test_execute_with_result_rejects_non_object_arguments():
+    registry = ToolRegistry()
+
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    registry.register(add, name="add", description="Add two numbers")
+
+    result = await registry.execute_with_result("add", "[]")
+
+    assert result.ok is False
+    assert result.error_kind == "invalid_arguments"
+    assert "arguments must be a JSON object" in result.content
+
+
+@pytest.mark.asyncio
+async def test_execute_with_result_missing_required_argument():
+    registry = ToolRegistry()
+
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    registry.register(add, name="add", description="Add two numbers")
+
+    result = await registry.execute_with_result("add", "{}")
+
+    assert result.ok is False
+    assert result.error_kind == "invalid_arguments"
+    assert "Invalid arguments for tool 'add'" in result.content
+
+
+@pytest.mark.asyncio
 async def test_execute_with_result_tool_not_found():
     registry = ToolRegistry()
 
@@ -156,6 +188,22 @@ async def test_execute_with_result_timeout():
     assert result.ok is False
     assert result.error_kind == "timeout"
     assert "Tool timed out after 0.01s: slow" in result.content
+
+
+@pytest.mark.asyncio
+async def test_execute_with_result_tool_raised_timeout_without_wrapper_timeout():
+    registry = ToolRegistry()
+
+    async def raises_timeout() -> str:
+        raise TimeoutError("inner")
+
+    registry.register(raises_timeout, name="raises_timeout", description="Raises timeout")
+
+    result = await registry.execute_with_result("raises_timeout", "{}", timeout=None)
+
+    assert result.ok is False
+    assert result.error_kind == "tool_error"
+    assert result.content == "Error executing tool 'raises_timeout': inner"
 
 
 @pytest.mark.asyncio

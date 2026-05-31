@@ -128,6 +128,21 @@ class ToolRegistry:
         tool = self._tools[name]
         try:
             args = json.loads(arguments_json)
+            if not isinstance(args, dict):
+                return ToolExecutionResult.failure(
+                    content=f"Invalid arguments for tool '{name}': arguments must be a JSON object",
+                    error_kind="invalid_arguments",
+                    duration_ms=_elapsed_ms(start),
+                )
+            if not tool.is_mcp:
+                try:
+                    inspect.signature(tool.handler).bind(**args)
+                except TypeError as exc:
+                    return ToolExecutionResult.failure(
+                        content=f"Invalid arguments for tool '{name}': {exc}",
+                        error_kind="invalid_arguments",
+                        duration_ms=_elapsed_ms(start),
+                    )
 
             async def call_tool() -> Any:
                 if tool.is_mcp:
@@ -135,19 +150,20 @@ class ToolRegistry:
                 return await tool.handler(**args)
 
             if timeout is not None:
-                result = await asyncio.wait_for(call_tool(), timeout=timeout)
+                try:
+                    result = await asyncio.wait_for(call_tool(), timeout=timeout)
+                except asyncio.TimeoutError:
+                    return ToolExecutionResult.failure(
+                        content=f"Tool timed out after {timeout}s: {name}",
+                        error_kind="timeout",
+                        duration_ms=_elapsed_ms(start),
+                    )
             else:
                 result = await call_tool()
         except JSONDecodeError as exc:
             return ToolExecutionResult.failure(
                 content=f"Invalid JSON arguments for tool '{name}': {exc}",
                 error_kind="invalid_arguments",
-                duration_ms=_elapsed_ms(start),
-            )
-        except asyncio.TimeoutError:
-            return ToolExecutionResult.failure(
-                content=f"Tool timed out after {timeout}s: {name}",
-                error_kind="timeout",
                 duration_ms=_elapsed_ms(start),
             )
         except PermissionError as exc:
