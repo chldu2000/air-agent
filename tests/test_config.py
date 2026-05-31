@@ -179,3 +179,47 @@ class TestSkillsDirConfig:
         monkeypatch.setenv("AIR_SKILLS_DIR", "/my/skills")
         config = AgentConfig.from_env()
         assert config.skills_dir == "/my/skills"
+
+
+class TestTracingConfig:
+    def test_tracing_defaults_are_disabled(self):
+        config = AgentConfig()
+
+        assert config.enable_tracing is False
+        assert config.log_events is False
+        assert config.event_handlers is None
+        assert config.max_tool_retries == 0
+
+    def test_tracing_config_from_json(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "enable_tracing": True,
+            "log_events": True,
+            "max_tool_retries": 2,
+        }))
+
+        config = AgentConfig.from_json(str(config_file))
+
+        assert config.enable_tracing is True
+        assert config.log_events is True
+        assert config.max_tool_retries == 2
+
+    def test_tracing_config_from_env(self, monkeypatch):
+        monkeypatch.setenv("AIR_ENABLE_TRACING", "true")
+        monkeypatch.setenv("AIR_LOG_EVENTS", "1")
+        monkeypatch.setenv("AIR_MAX_TOOL_RETRIES", "3")
+
+        config = AgentConfig.from_env()
+
+        assert config.enable_tracing is True
+        assert config.log_events is True
+        assert config.max_tool_retries == 3
+
+    def test_tracing_env_false_values(self, monkeypatch):
+        monkeypatch.setenv("AIR_ENABLE_TRACING", "false")
+        monkeypatch.setenv("AIR_LOG_EVENTS", "0")
+
+        config = AgentConfig.from_env()
+
+        assert config.enable_tracing is False
+        assert config.log_events is False

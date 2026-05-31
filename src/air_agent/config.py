@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from air_agent.tools.builtin.config import BuiltinToolsConfig
 
@@ -26,6 +26,10 @@ class SubagentConfig:
     max_parallel: int = 5
     timeout: float = 60.0
     inherit_tools: bool = True
+
+
+def _parse_bool(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _parse_mcp_server(data: dict[str, Any]) -> MCPServerStdio | MCPServerSSE:
@@ -57,6 +61,10 @@ class AgentConfig:
     default_headers: dict[str, str] | None = None
     skills_dir: str | None = None
     builtin_tools: BuiltinToolsConfig | None = None
+    enable_tracing: bool = False
+    log_events: bool = False
+    event_handlers: list[Callable[[Any], Any]] | None = None
+    max_tool_retries: int = 0
 
     def __post_init__(self):
         if self.api_key is None:
@@ -89,6 +97,9 @@ class AgentConfig:
             f"{prefix}MAX_ITERATIONS": ("max_iterations", int),
             f"{prefix}TOOL_TIMEOUT": ("tool_timeout", float),
             f"{prefix}SKILLS_DIR": ("skills_dir", str),
+            f"{prefix}ENABLE_TRACING": ("enable_tracing", _parse_bool),
+            f"{prefix}LOG_EVENTS": ("log_events", _parse_bool),
+            f"{prefix}MAX_TOOL_RETRIES": ("max_tool_retries", int),
         }
 
         for env_key, (field_name, type_) in env_map.items():
