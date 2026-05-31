@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import json
+import logging
 from datetime import datetime, timezone
 
+import pytest
+
+from air_agent.tracing import EventDispatcher
 from air_agent.types import RunEvent, ToolExecutionResult
 
 
@@ -65,3 +70,53 @@ def test_tool_execution_result_success_and_failure_shapes():
     assert failure.content == "Error executing tool 'add': boom"
     assert failure.error_kind == "tool_error"
     assert failure.duration_ms == 4.0
+
+
+@pytest.mark.asyncio
+async def test_event_dispatcher_calls_sync_and_async_handlers():
+    seen = []
+
+    def sync_handler(event):
+        seen.append(("sync", event.type))
+
+    async def async_handler(event):
+        seen.append(("async", event.type))
+
+    dispatcher = EventDispatcher(
+        enabled=True,
+        handlers=[sync_handler, async_handler],
+        log_events=False,
+    )
+
+    await dispatcher.emit(RunEvent(type="done", run_id="run_123", content="ok"))
+
+    assert seen == [("sync", "done"), ("async", "done")]
+
+
+@pytest.mark.asyncio
+async def test_event_dispatcher_ignores_events_when_disabled():
+    seen = []
+    dispatcher = EventDispatcher(
+        enabled=False,
+        handlers=[lambda event: seen.append(event.type)],
+        log_events=False,
+    )
+
+    await dispatcher.emit(RunEvent(type="done", run_id="run_123", content="ok"))
+
+    assert seen == []
+
+
+@pytest.mark.asyncio
+async def test_event_dispatcher_logs_json_when_enabled(caplog):
+    logger = logging.getLogger("air_agent.tracing")
+    dispatcher = EventDispatcher(enabled=True, handlers=[], log_events=True, logger=logger)
+
+    with caplog.at_level(logging.INFO, logger="air_agent.tracing"):
+        await dispatcher.emit(RunEvent(type="done", run_id="run_123", content="ok"))
+
+    assert len(caplog.records) == 1
+    payload = json.loads(caplog.records[0].message)
+    assert payload["type"] == "done"
+    assert payload["run_id"] == "run_123"
+    assert payload["content"] == "ok"
