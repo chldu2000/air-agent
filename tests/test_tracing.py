@@ -171,3 +171,26 @@ async def test_event_dispatcher_logging_serialization_error_warns_and_continues(
     assert seen == ["done"]
     assert len(caplog.records) == 1
     assert caplog.records[0].levelno == logging.WARNING
+
+
+@pytest.mark.asyncio
+async def test_event_dispatcher_broken_warning_logger_does_not_raise():
+    seen = []
+
+    class BrokenLogger:
+        def info(self, message):
+            raise RuntimeError("info failed")
+
+        def warning(self, message, exc_info=False):
+            raise RuntimeError("warning failed")
+
+    dispatcher = EventDispatcher(
+        enabled=True,
+        handlers=[lambda event: seen.append(event.type)],
+        log_events=True,
+        logger=BrokenLogger(),
+    )
+
+    await dispatcher.emit(RunEvent(type="done", run_id="run_123", content="ok"))
+
+    assert seen == ["done"]

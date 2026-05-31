@@ -28,6 +28,12 @@ class EventDispatcher:
         self.log_events = log_events
         self.logger = logger or logging.getLogger(__name__)
 
+    def _warn_best_effort(self, message: str) -> None:
+        try:
+            self.logger.warning(message, exc_info=True)
+        except Exception:
+            pass
+
     async def emit(self, event: RunEvent) -> None:
         if not self.enabled:
             return
@@ -39,7 +45,7 @@ class EventDispatcher:
             try:
                 self.logger.info(json.dumps(event.to_dict(), ensure_ascii=False))
             except Exception:
-                self.logger.warning("Failed to log run event", exc_info=True)
+                self._warn_best_effort("Failed to log run event")
 
         for handler in self.handlers:
             try:
@@ -47,4 +53,4 @@ class EventDispatcher:
                 if inspect.isawaitable(result):
                     await result
             except Exception:
-                self.logger.warning("Run event handler failed", exc_info=True)
+                self._warn_best_effort("Run event handler failed")
