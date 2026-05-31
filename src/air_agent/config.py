@@ -29,7 +29,12 @@ class SubagentConfig:
 
 
 def _parse_bool(value: str) -> bool:
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"Invalid boolean value: {value}")
 
 
 def _parse_mcp_server(data: dict[str, Any]) -> MCPServerStdio | MCPServerSSE:
@@ -77,7 +82,9 @@ class AgentConfig:
 
         mcp_servers = [_parse_mcp_server(s) for s in data.pop("mcp_servers", [])]
         builtin_raw = data.pop("builtin_tools", None)
-        field_names = {f.name for f in cls.__dataclass_fields__.values()}
+        field_names = {
+            f.name for f in cls.__dataclass_fields__.values() if f.name != "event_handlers"
+        }
         kwargs = {k: v for k, v in data.items() if k in field_names}
 
         if builtin_raw and isinstance(builtin_raw, dict):

@@ -204,6 +204,16 @@ class TestTracingConfig:
         assert config.log_events is True
         assert config.max_tool_retries == 2
 
+    def test_event_handlers_from_json_are_ignored(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "event_handlers": ["handler_name"],
+        }))
+
+        config = AgentConfig.from_json(str(config_file))
+
+        assert config.event_handlers is None
+
     def test_tracing_config_from_env(self, monkeypatch):
         monkeypatch.setenv("AIR_ENABLE_TRACING", "true")
         monkeypatch.setenv("AIR_LOG_EVENTS", "1")
@@ -223,3 +233,9 @@ class TestTracingConfig:
 
         assert config.enable_tracing is False
         assert config.log_events is False
+
+    def test_invalid_tracing_env_bool_raises(self, monkeypatch):
+        monkeypatch.setenv("AIR_ENABLE_TRACING", "ture")
+
+        with pytest.raises(ValueError, match="Invalid boolean value"):
+            AgentConfig.from_env()
