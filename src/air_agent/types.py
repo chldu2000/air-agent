@@ -1,7 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from datetime import datetime
+from typing import Any, Literal
+
+
+ToolErrorKind = Literal[
+    "invalid_arguments",
+    "tool_not_found",
+    "timeout",
+    "permission_denied",
+    "tool_error",
+]
 
 
 @dataclass
@@ -33,6 +43,78 @@ class StreamEvent:
     def __post_init__(self):
         if isinstance(self.usage, dict):
             self.usage = TokenUsage(**self.usage)
+
+
+@dataclass
+class RunEvent:
+    type: str
+    run_id: str
+    conversation_id: str | None = None
+    iteration: int | None = None
+    timestamp: datetime | None = None
+    name: str | None = None
+    arguments: str | None = None
+    content: str | None = None
+    duration_ms: float | None = None
+    usage: TokenUsage | dict[str, int] | None = None
+    error_kind: ToolErrorKind | None = None
+    attempt: int | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        if isinstance(self.usage, dict):
+            self.usage = TokenUsage(**self.usage)
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "type": self.type,
+            "run_id": self.run_id,
+        }
+        optional_fields = {
+            "conversation_id": self.conversation_id,
+            "iteration": self.iteration,
+            "timestamp": self.timestamp.isoformat() if self.timestamp else None,
+            "name": self.name,
+            "arguments": self.arguments,
+            "duration_ms": self.duration_ms,
+            "error_kind": self.error_kind,
+            "attempt": self.attempt,
+        }
+        data.update(
+            {key: value for key, value in optional_fields.items() if value is not None}
+        )
+        if self.content is not None:
+            data["content"] = self.content
+        if self.usage is not None:
+            data["usage"] = {
+                "prompt_tokens": self.usage.prompt_tokens,
+                "completion_tokens": self.usage.completion_tokens,
+                "total_tokens": self.usage.total_tokens,
+            }
+        if self.metadata:
+            data["metadata"] = self.metadata
+        return data
+
+
+@dataclass
+class ToolExecutionResult:
+    ok: bool
+    content: str
+    error_kind: ToolErrorKind | None = None
+    duration_ms: float | None = None
+
+    @classmethod
+    def success(cls, content: str, duration_ms: float | None = None) -> ToolExecutionResult:
+        return cls(ok=True, content=content, duration_ms=duration_ms)
+
+    @classmethod
+    def failure(
+        cls,
+        content: str,
+        error_kind: ToolErrorKind,
+        duration_ms: float | None = None,
+    ) -> ToolExecutionResult:
+        return cls(ok=False, content=content, error_kind=error_kind, duration_ms=duration_ms)
 
 
 @dataclass

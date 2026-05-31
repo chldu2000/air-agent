@@ -1,7 +1,14 @@
 """Air Agent — lightweight AI agent library."""
 
 from air_agent.config import AgentConfig, MCPServerStdio, MCPServerSSE, SubagentConfig
-from air_agent.types import Response, StreamEvent, SubagentResult
+from air_agent.types import (
+    Response,
+    RunEvent,
+    StreamEvent,
+    SubagentResult,
+    ToolErrorKind,
+    ToolExecutionResult,
+)
 from air_agent.agent import Agent
 from air_agent.skills.skill import Skill
 from air_agent.skills.manager import SkillManager
@@ -15,8 +22,11 @@ __all__ = [
     "MCPServerSSE",
     "SubagentConfig",
     "Response",
+    "RunEvent",
     "StreamEvent",
     "SubagentResult",
+    "ToolErrorKind",
+    "ToolExecutionResult",
     "Skill",
     "SkillManager",
     "SkillRouter",
