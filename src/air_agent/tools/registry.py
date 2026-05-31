@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
+import time
+from json import JSONDecodeError
 from typing import Any, Callable, Awaitable
 
+from air_agent.types import ToolExecutionResult
 from air_agent.tools.base import Tool
+
+
+def _elapsed_ms(start: float) -> float:
+    return round((time.perf_counter() - start) * 1000, 3)
 
 
 def _python_type_to_json_schema(annotation: Any) -> dict[str, Any]:
@@ -101,6 +109,64 @@ class ToolRegistry:
         else:
             result = await tool.handler(**args)
         return str(result)
+
+    async def execute_with_result(
+        self,
+        name: str,
+        arguments_json: str,
+        *,
+        timeout: float | None = None,
+    ) -> ToolExecutionResult:
+        start = time.perf_counter()
+        if name not in self._tools:
+            return ToolExecutionResult.failure(
+                content=f"Tool not found: {name}",
+                error_kind="tool_not_found",
+                duration_ms=_elapsed_ms(start),
+            )
+
+        tool = self._tools[name]
+        try:
+            args = json.loads(arguments_json)
+
+            async def call_tool() -> Any:
+                if tool.is_mcp:
+                    return await tool.handler(args)
+                return await tool.handler(**args)
+
+            if timeout is not None:
+                result = await asyncio.wait_for(call_tool(), timeout=timeout)
+            else:
+                result = await call_tool()
+        except JSONDecodeError as exc:
+            return ToolExecutionResult.failure(
+                content=f"Invalid JSON arguments for tool '{name}': {exc}",
+                error_kind="invalid_arguments",
+                duration_ms=_elapsed_ms(start),
+            )
+        except asyncio.TimeoutError:
+            return ToolExecutionResult.failure(
+                content=f"Tool timed out after {timeout}s: {name}",
+                error_kind="timeout",
+                duration_ms=_elapsed_ms(start),
+            )
+        except PermissionError as exc:
+            return ToolExecutionResult.failure(
+                content=f"Permission denied executing tool '{name}': {exc}",
+                error_kind="permission_denied",
+                duration_ms=_elapsed_ms(start),
+            )
+        except Exception as exc:
+            return ToolExecutionResult.failure(
+                content=f"Error executing tool '{name}': {exc}",
+                error_kind="tool_error",
+                duration_ms=_elapsed_ms(start),
+            )
+
+        return ToolExecutionResult.success(
+            content=str(result),
+            duration_ms=_elapsed_ms(start),
+        )
 
     def has_tool(self, name: str) -> bool:
         return name in self._tools
