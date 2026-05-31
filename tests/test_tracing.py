@@ -120,3 +120,54 @@ async def test_event_dispatcher_logs_json_when_enabled(caplog):
     assert payload["type"] == "done"
     assert payload["run_id"] == "run_123"
     assert payload["content"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_event_dispatcher_handler_exception_does_not_stop_later_handlers(caplog):
+    seen = []
+    logger = logging.getLogger("air_agent.tracing")
+
+    def bad_handler(event):
+        raise RuntimeError("handler failed")
+
+    def later_handler(event):
+        seen.append(event.type)
+
+    dispatcher = EventDispatcher(
+        enabled=True,
+        handlers=[bad_handler, later_handler],
+        log_events=False,
+        logger=logger,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="air_agent.tracing"):
+        await dispatcher.emit(RunEvent(type="done", run_id="run_123", content="ok"))
+
+    assert seen == ["done"]
+    assert len(caplog.records) == 1
+    assert caplog.records[0].levelno == logging.WARNING
+
+
+@pytest.mark.asyncio
+async def test_event_dispatcher_logging_serialization_error_warns_and_continues(caplog):
+    seen = []
+    logger = logging.getLogger("air_agent.tracing")
+    dispatcher = EventDispatcher(
+        enabled=True,
+        handlers=[lambda event: seen.append(event.type)],
+        log_events=True,
+        logger=logger,
+    )
+    event = RunEvent(
+        type="done",
+        run_id="run_123",
+        content="ok",
+        metadata={"value": object()},
+    )
+
+    with caplog.at_level(logging.WARNING, logger="air_agent.tracing"):
+        await dispatcher.emit(event)
+
+    assert seen == ["done"]
+    assert len(caplog.records) == 1
+    assert caplog.records[0].levelno == logging.WARNING

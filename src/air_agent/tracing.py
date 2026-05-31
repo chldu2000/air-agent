@@ -36,9 +36,15 @@ class EventDispatcher:
             event.timestamp = datetime.now(timezone.utc)
 
         if self.log_events:
-            self.logger.info(json.dumps(event.to_dict(), ensure_ascii=False))
+            try:
+                self.logger.info(json.dumps(event.to_dict(), ensure_ascii=False))
+            except Exception:
+                self.logger.warning("Failed to log run event", exc_info=True)
 
         for handler in self.handlers:
-            result = handler(event)
-            if inspect.isawaitable(result):
-                await result
+            try:
+                result = handler(event)
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:
+                self.logger.warning("Run event handler failed", exc_info=True)
