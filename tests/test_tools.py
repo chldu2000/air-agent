@@ -115,6 +115,29 @@ async def test_execute_with_result_success():
 
 
 @pytest.mark.asyncio
+async def test_execute_with_result_mcp_tool_uses_argument_dict():
+    registry = ToolRegistry()
+    seen = []
+
+    async def handler(arguments: dict) -> str:
+        seen.append(arguments)
+        return f"read {arguments['path']}"
+
+    registry.register_mcp_tool(
+        name="mcp_read",
+        description="Read via MCP",
+        parameters={"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+        handler=handler,
+    )
+
+    result = await registry.execute_with_result("mcp_read", '{"path": "/tmp/a"}')
+
+    assert result.ok is True
+    assert result.content == "read /tmp/a"
+    assert seen == [{"path": "/tmp/a"}]
+
+
+@pytest.mark.asyncio
 async def test_execute_with_result_invalid_arguments():
     registry = ToolRegistry()
 
@@ -220,6 +243,22 @@ async def test_execute_with_result_tool_raised_timeout_with_wrapper_timeout():
     assert result.ok is False
     assert result.error_kind == "tool_error"
     assert result.content == "Error executing tool 'raises_timeout': inner"
+
+
+@pytest.mark.asyncio
+async def test_execute_with_result_generic_tool_error():
+    registry = ToolRegistry()
+
+    async def explode() -> str:
+        raise RuntimeError("boom")
+
+    registry.register(explode, name="explode", description="Explodes")
+
+    result = await registry.execute_with_result("explode", "{}")
+
+    assert result.ok is False
+    assert result.error_kind == "tool_error"
+    assert result.content == "Error executing tool 'explode': boom"
 
 
 @pytest.mark.asyncio
