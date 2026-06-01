@@ -15,6 +15,12 @@ def _elapsed_ms(start: float) -> float:
     return round((time.perf_counter() - start) * 1000, 3)
 
 
+class _ToolRaisedTimeoutError(Exception):
+    def __init__(self, original: TimeoutError) -> None:
+        super().__init__(str(original))
+        self.original = original
+
+
 def _python_type_to_json_schema(annotation: Any) -> dict[str, Any]:
     origin = getattr(annotation, "__origin__", None)
     if annotation is str:
@@ -145,13 +151,22 @@ class ToolRegistry:
                     )
 
             async def call_tool() -> Any:
-                if tool.is_mcp:
-                    return await tool.handler(args)
-                return await tool.handler(**args)
+                try:
+                    if tool.is_mcp:
+                        return await tool.handler(args)
+                    return await tool.handler(**args)
+                except TimeoutError as exc:
+                    raise _ToolRaisedTimeoutError(exc) from exc
 
             if timeout is not None:
                 try:
                     result = await asyncio.wait_for(call_tool(), timeout=timeout)
+                except _ToolRaisedTimeoutError as exc:
+                    return ToolExecutionResult.failure(
+                        content=f"Error executing tool '{name}': {exc}",
+                        error_kind="tool_error",
+                        duration_ms=_elapsed_ms(start),
+                    )
                 except asyncio.TimeoutError:
                     return ToolExecutionResult.failure(
                         content=f"Tool timed out after {timeout}s: {name}",
@@ -170,6 +185,12 @@ class ToolRegistry:
             return ToolExecutionResult.failure(
                 content=f"Permission denied executing tool '{name}': {exc}",
                 error_kind="permission_denied",
+                duration_ms=_elapsed_ms(start),
+            )
+        except _ToolRaisedTimeoutError as exc:
+            return ToolExecutionResult.failure(
+                content=f"Error executing tool '{name}': {exc}",
+                error_kind="tool_error",
                 duration_ms=_elapsed_ms(start),
             )
         except Exception as exc:

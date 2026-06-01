@@ -207,6 +207,22 @@ async def test_execute_with_result_tool_raised_timeout_without_wrapper_timeout()
 
 
 @pytest.mark.asyncio
+async def test_execute_with_result_tool_raised_timeout_with_wrapper_timeout():
+    registry = ToolRegistry()
+
+    async def raises_timeout() -> str:
+        raise TimeoutError("inner")
+
+    registry.register(raises_timeout, name="raises_timeout", description="Raises timeout")
+
+    result = await registry.execute_with_result("raises_timeout", "{}", timeout=1)
+
+    assert result.ok is False
+    assert result.error_kind == "tool_error"
+    assert result.content == "Error executing tool 'raises_timeout': inner"
+
+
+@pytest.mark.asyncio
 async def test_execute_with_result_permission_denied():
     registry = ToolRegistry()
 
