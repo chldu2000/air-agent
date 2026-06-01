@@ -132,3 +132,123 @@ async def test_decorator_tool_registration():
         return f"Hello, {name}"
 
     assert agent._registry.has_tool("greet")
+
+
+@pytest.mark.asyncio
+async def test_run_emits_llm_and_done_events_when_tracing_enabled():
+    events = []
+    config = AgentConfig(
+        model="gpt-4o",
+        api_key="test-key",
+        enable_tracing=True,
+        event_handlers=[events.append],
+    )
+    agent = Agent(config)
+
+    with patch.object(agent._client.chat.completions, "create", new_callable=AsyncMock) as mock_create:
+        mock_create.return_value = _mock_openai_response("Hello")
+        result = await agent.run("Hi", conversation_id="conv_1")
+
+    assert result.content == "Hello"
+    assert [event.type for event in events] == ["llm_start", "llm_end", "done"]
+    assert events[0].run_id == events[1].run_id == events[2].run_id
+    assert events[0].conversation_id == "conv_1"
+    assert events[0].iteration == 0
+    assert events[1].usage.total_tokens == 30
+    assert events[2].content == "Hello"
+
+
+@pytest.mark.asyncio
+async def test_run_emits_tool_start_and_tool_end_events():
+    events = []
+    config = AgentConfig(
+        model="gpt-4o",
+        api_key="test-key",
+        enable_tracing=True,
+        event_handlers=[events.append],
+    )
+    agent = Agent(config)
+
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    agent.add_tools([add])
+
+    tool_call = MagicMock()
+    tool_call.id = "tc_1"
+    tool_call.function.name = "add"
+    tool_call.function.arguments = '{"a": 3, "b": 5}'
+
+    resp1 = _mock_openai_response(None, tool_calls=[tool_call])
+    resp2 = _mock_openai_response("The result is 8.")
+
+    with patch.object(agent._client.chat.completions, "create", new_callable=AsyncMock) as mock_create:
+        mock_create.side_effect = [resp1, resp2]
+        result = await agent.run("What is 3+5?")
+
+    assert result.content == "The result is 8."
+    event_types = [event.type for event in events]
+    assert event_types == [
+        "llm_start",
+        "llm_end",
+        "tool_start",
+        "tool_end",
+        "llm_start",
+        "llm_end",
+        "done",
+    ]
+    tool_start = events[2]
+    tool_end = events[3]
+    assert tool_start.name == "add"
+    assert tool_start.arguments == '{"a": 3, "b": 5}'
+    assert tool_end.name == "add"
+    assert tool_end.content == "8"
+    assert tool_end.duration_ms is not None
+
+
+@pytest.mark.asyncio
+async def test_run_emits_tool_error_event_with_error_kind():
+    events = []
+    config = AgentConfig(
+        model="gpt-4o",
+        api_key="test-key",
+        enable_tracing=True,
+        event_handlers=[events.append],
+    )
+    agent = Agent(config)
+
+    tool_call = MagicMock()
+    tool_call.id = "tc_1"
+    tool_call.function.name = "missing"
+    tool_call.function.arguments = "{}"
+
+    resp1 = _mock_openai_response(None, tool_calls=[tool_call])
+    resp2 = _mock_openai_response("I could not call the tool.")
+
+    with patch.object(agent._client.chat.completions, "create", new_callable=AsyncMock) as mock_create:
+        mock_create.side_effect = [resp1, resp2]
+        await agent.run("Use missing tool")
+
+    tool_error = [event for event in events if event.type == "tool_error"][0]
+    assert tool_error.name == "missing"
+    assert tool_error.error_kind == "tool_not_found"
+    assert "Tool not found: missing" in tool_error.content
+
+
+@pytest.mark.asyncio
+async def test_run_does_not_emit_events_when_tracing_disabled():
+    events = []
+    config = AgentConfig(
+        model="gpt-4o",
+        api_key="test-key",
+        enable_tracing=False,
+        event_handlers=[events.append],
+    )
+    agent = Agent(config)
+
+    with patch.object(agent._client.chat.completions, "create", new_callable=AsyncMock) as mock_create:
+        mock_create.return_value = _mock_openai_response("Hello")
+        result = await agent.run("Hi")
+
+    assert result.content == "Hello"
+    assert events == []

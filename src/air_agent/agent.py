@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, AsyncIterator
+from uuid import uuid4
 
 from openai import AsyncOpenAI
 
@@ -14,7 +16,8 @@ from air_agent.skills.manager import SkillManager
 from air_agent.skills.router import LLMSkillRouter
 from air_agent.subagent import delegate as _delegate
 from air_agent.tools.registry import ToolRegistry
-from air_agent.types import Response, StreamEvent, SubagentResult, TokenUsage
+from air_agent.tracing import EventDispatcher
+from air_agent.types import Response, RunEvent, StreamEvent, SubagentResult, TokenUsage
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +37,11 @@ class Agent:
         self._conversations: dict[str, list[dict[str, Any]]] = {}
         self._skill_manager: SkillManager | None = None
         self._skill_router: LLMSkillRouter | None = None
+        self._events = EventDispatcher(
+            enabled=config.enable_tracing or config.log_events,
+            handlers=config.event_handlers,
+            log_events=config.log_events,
+        )
         if config.skills_dir:
             self._skill_manager = SkillManager(config.skills_dir)
             self._skill_manager.load()
@@ -84,6 +92,9 @@ class Agent:
     async def __aexit__(self, *exc):
         await self._disconnect_mcp()
 
+    async def _emit(self, event_type: str, **kwargs: Any) -> None:
+        await self._events.emit(RunEvent(type=event_type, **kwargs))
+
     def _build_messages(self, user_input: str, conversation_id: str | None) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = []
         if self.config.system_prompt or self._skill_manager:
@@ -108,9 +119,16 @@ class Agent:
         messages = self._build_messages(message, conversation_id)
         if stream:
             return await self._run_stream(messages, conversation_id)
-        return await self._run(messages, conversation_id)
+        run_id = f"run_{uuid4().hex}"
+        return await self._run(messages, conversation_id, run_id=run_id)
 
-    async def _run(self, messages: list[dict], conversation_id: str | None) -> Response:
+    async def _run(
+        self,
+        messages: list[dict],
+        conversation_id: str | None = None,
+        run_id: str | None = None,
+    ) -> Response:
+        run_id = run_id or f"run_{uuid4().hex}"
         tools = self._registry.get_openai_tools() or None
         history: list[dict[str, Any]] = list(messages)
 
@@ -127,7 +145,7 @@ class Agent:
                     "content": header,
                 })
 
-        for _ in range(self.config.max_iterations):
+        for iteration in range(self.config.max_iterations):
             kwargs: dict[str, Any] = {
                 "model": self.config.model,
                 "messages": history,
@@ -135,25 +153,54 @@ class Agent:
             if tools:
                 kwargs["tools"] = tools
 
+            await self._emit(
+                "llm_start",
+                run_id=run_id,
+                conversation_id=conversation_id,
+                iteration=iteration,
+                metadata={"tools_count": len(tools or [])},
+            )
+            llm_start = time.perf_counter()
             response = await self._client.chat.completions.create(**kwargs)
+            llm_duration_ms = round((time.perf_counter() - llm_start) * 1000, 3)
             choice = response.choices[0]
             assistant_msg = choice.message
             history.append(_message_to_dict(assistant_msg))
 
+            usage = _usage_from_response(response)
+            await self._emit(
+                "llm_end",
+                run_id=run_id,
+                conversation_id=conversation_id,
+                iteration=iteration,
+                duration_ms=llm_duration_ms,
+                usage=usage,
+            )
+
             if not assistant_msg.tool_calls:
-                usage = None
-                if response.usage:
-                    usage = TokenUsage(
-                        prompt_tokens=response.usage.prompt_tokens,
-                        completion_tokens=response.usage.completion_tokens,
-                        total_tokens=response.usage.total_tokens,
-                    )
+                content = assistant_msg.content or ""
+                await self._emit(
+                    "done",
+                    run_id=run_id,
+                    conversation_id=conversation_id,
+                    iteration=iteration,
+                    content=content,
+                    usage=usage,
+                )
                 result = Response(content=assistant_msg.content or "", usage=usage, history=history)
                 if conversation_id:
                     self._conversations[conversation_id] = history[-20:]
                 return result
 
-            results = await _execute_tool_calls(self._registry, assistant_msg.tool_calls)
+            results = await asyncio.gather(*[
+                self._execute_tool_call_with_events(
+                    tc,
+                    run_id=run_id,
+                    conversation_id=conversation_id,
+                    iteration=iteration,
+                )
+                for tc in assistant_msg.tool_calls
+            ])
             for tc, tool_result in zip(assistant_msg.tool_calls, results):
                 history.append({
                     "role": "tool",
@@ -161,7 +208,51 @@ class Agent:
                     "content": tool_result,
                 })
 
-        return Response(content="Reached maximum iterations without completion.", history=history)
+        content = "Reached maximum iterations without completion."
+        await self._emit(
+            "done",
+            run_id=run_id,
+            conversation_id=conversation_id,
+            content=content,
+        )
+        return Response(content=content, history=history)
+
+    async def _execute_tool_call_with_events(
+        self,
+        tool_call: Any,
+        *,
+        run_id: str,
+        conversation_id: str | None,
+        iteration: int,
+    ) -> str:
+        name = tool_call.function.name
+        arguments = tool_call.function.arguments
+        await self._emit(
+            "tool_start",
+            run_id=run_id,
+            conversation_id=conversation_id,
+            iteration=iteration,
+            name=name,
+            arguments=arguments,
+        )
+        result = await self._registry.execute_with_result(
+            name,
+            arguments,
+            timeout=self.config.tool_timeout,
+        )
+        event_type = "tool_end" if result.ok else "tool_error"
+        await self._emit(
+            event_type,
+            run_id=run_id,
+            conversation_id=conversation_id,
+            iteration=iteration,
+            name=name,
+            arguments=arguments,
+            content=result.content,
+            duration_ms=result.duration_ms,
+            error_kind=result.error_kind,
+        )
+        return result.content
 
     async def _run_stream(
         self, messages: list[dict], conversation_id: str | None
@@ -298,6 +389,16 @@ def _message_to_dict(msg: Any) -> dict[str, Any]:
             for tc in msg.tool_calls
         ]
     return d
+
+
+def _usage_from_response(response: Any) -> TokenUsage | None:
+    if not response.usage:
+        return None
+    return TokenUsage(
+        prompt_tokens=response.usage.prompt_tokens,
+        completion_tokens=response.usage.completion_tokens,
+        total_tokens=response.usage.total_tokens,
+    )
 
 
 async def _execute_tool_calls(registry: ToolRegistry, tool_calls: list) -> list[str]:
