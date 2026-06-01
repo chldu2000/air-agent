@@ -252,3 +252,132 @@ async def test_run_does_not_emit_events_when_tracing_disabled():
 
     assert result.content == "Hello"
     assert events == []
+
+
+@pytest.mark.asyncio
+async def test_tool_retry_event_emitted_before_successful_retry():
+    events = []
+    config = AgentConfig(
+        model="gpt-4o",
+        api_key="test-key",
+        enable_tracing=True,
+        event_handlers=[events.append],
+        max_tool_retries=1,
+    )
+    agent = Agent(config)
+    calls = 0
+
+    async def flaky() -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("temporary")
+        return "ok"
+
+    agent.tool(name="flaky", description="Flaky tool")(flaky)
+
+    tool_call = MagicMock()
+    tool_call.id = "tc_1"
+    tool_call.function.name = "flaky"
+    tool_call.function.arguments = "{}"
+
+    resp1 = _mock_openai_response(None, tool_calls=[tool_call])
+    resp2 = _mock_openai_response("Recovered.")
+
+    with patch.object(agent._client.chat.completions, "create", new_callable=AsyncMock) as mock_create:
+        mock_create.side_effect = [resp1, resp2]
+        result = await agent.run("Call flaky")
+
+    assert result.content == "Recovered."
+    assert calls == 2
+    retry_event = [event for event in events if event.type == "retry"][0]
+    assert retry_event.name == "flaky"
+    assert retry_event.error_kind == "tool_error"
+    assert retry_event.attempt == 1
+    tool_end = [event for event in events if event.type == "tool_end"][0]
+    assert tool_end.content == "ok"
+    assert tool_end.attempt == 1
+
+
+@pytest.mark.asyncio
+async def test_invalid_arguments_not_retried_when_tool_retries_enabled():
+    events = []
+    config = AgentConfig(
+        model="gpt-4o",
+        api_key="test-key",
+        enable_tracing=True,
+        event_handlers=[events.append],
+        max_tool_retries=2,
+    )
+    agent = Agent(config)
+    calls = 0
+
+    async def needs_value(value: str) -> str:
+        nonlocal calls
+        calls += 1
+        return value
+
+    agent.tool(name="needs_value", description="Needs value")(needs_value)
+
+    tool_call = MagicMock()
+    tool_call.id = "tc_1"
+    tool_call.function.name = "needs_value"
+    tool_call.function.arguments = "{}"
+
+    result = await agent._execute_tool_call_with_events(
+        tool_call,
+        run_id="run_1",
+        conversation_id=None,
+        iteration=0,
+    )
+
+    tool_starts = [event for event in events if event.type == "tool_start"]
+    tool_errors = [event for event in events if event.type == "tool_error"]
+    retries = [event for event in events if event.type == "retry"]
+    assert calls == 0
+    assert len(tool_starts) == 1
+    assert tool_starts[0].attempt == 0
+    assert len(tool_errors) == 1
+    assert tool_errors[0].error_kind == "invalid_arguments"
+    assert tool_errors[0].attempt == 0
+    assert retries == []
+    assert "Invalid arguments" in result
+
+
+@pytest.mark.asyncio
+async def test_tool_error_retried_until_last_failure_returned():
+    events = []
+    config = AgentConfig(
+        model="gpt-4o",
+        api_key="test-key",
+        enable_tracing=True,
+        event_handlers=[events.append],
+        max_tool_retries=2,
+    )
+    agent = Agent(config)
+    calls = 0
+
+    async def always_fails() -> str:
+        nonlocal calls
+        calls += 1
+        raise RuntimeError(f"boom {calls}")
+
+    agent.tool(name="always_fails", description="Always fails")(always_fails)
+
+    tool_call = MagicMock()
+    tool_call.id = "tc_1"
+    tool_call.function.name = "always_fails"
+    tool_call.function.arguments = "{}"
+
+    result = await agent._execute_tool_call_with_events(
+        tool_call,
+        run_id="run_1",
+        conversation_id=None,
+        iteration=0,
+    )
+
+    assert calls == 3
+    assert "boom 3" in result
+    assert [event.attempt for event in events if event.type == "tool_start"] == [0, 1, 2]
+    assert [event.attempt for event in events if event.type == "tool_error"] == [0, 1, 2]
+    assert [event.attempt for event in events if event.type == "retry"] == [1, 2]

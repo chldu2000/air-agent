@@ -227,32 +227,69 @@ class Agent:
     ) -> str:
         name = tool_call.function.name
         arguments = tool_call.function.arguments
-        await self._emit(
-            "tool_start",
-            run_id=run_id,
-            conversation_id=conversation_id,
-            iteration=iteration,
-            name=name,
-            arguments=arguments,
-        )
-        result = await self._registry.execute_with_result(
-            name,
-            arguments,
-            timeout=self.config.tool_timeout,
-        )
-        event_type = "tool_end" if result.ok else "tool_error"
-        await self._emit(
-            event_type,
-            run_id=run_id,
-            conversation_id=conversation_id,
-            iteration=iteration,
-            name=name,
-            arguments=arguments,
-            content=result.content,
-            duration_ms=result.duration_ms,
-            error_kind=result.error_kind,
-        )
-        return result.content
+        max_attempt = max(0, self.config.max_tool_retries)
+        retryable_errors = {"timeout", "tool_error"}
+        last_failure_content = ""
+
+        for attempt in range(max_attempt + 1):
+            await self._emit(
+                "tool_start",
+                run_id=run_id,
+                conversation_id=conversation_id,
+                iteration=iteration,
+                name=name,
+                arguments=arguments,
+                attempt=attempt,
+            )
+            result = await self._registry.execute_with_result(
+                name,
+                arguments,
+                timeout=self.config.tool_timeout,
+            )
+            if result.ok:
+                await self._emit(
+                    "tool_end",
+                    run_id=run_id,
+                    conversation_id=conversation_id,
+                    iteration=iteration,
+                    name=name,
+                    arguments=arguments,
+                    content=result.content,
+                    duration_ms=result.duration_ms,
+                    error_kind=result.error_kind,
+                    attempt=attempt,
+                )
+                return result.content
+
+            last_failure_content = result.content
+            await self._emit(
+                "tool_error",
+                run_id=run_id,
+                conversation_id=conversation_id,
+                iteration=iteration,
+                name=name,
+                arguments=arguments,
+                content=result.content,
+                duration_ms=result.duration_ms,
+                error_kind=result.error_kind,
+                attempt=attempt,
+            )
+            if attempt < max_attempt and result.error_kind in retryable_errors:
+                await self._emit(
+                    "retry",
+                    run_id=run_id,
+                    conversation_id=conversation_id,
+                    iteration=iteration,
+                    name=name,
+                    arguments=arguments,
+                    content=result.content,
+                    error_kind=result.error_kind,
+                    attempt=attempt + 1,
+                )
+                continue
+            return result.content
+
+        return last_failure_content
 
     async def _run_stream(
         self, messages: list[dict], conversation_id: str | None
