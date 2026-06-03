@@ -63,6 +63,30 @@ async for event in await agent.run("写一首关于编程的诗", stream=True):
         print(f"\n完成，token 用量: {event.usage}")
 ```
 
+### Tracing 与结构化事件
+
+Tracing 默认关闭。启用后，Agent 会为 LLM 调用、工具调用、重试、错误和完成状态输出结构化 `RunEvent` 记录。
+
+```python
+from air_agent import Agent, AgentConfig
+
+events = []
+
+agent = Agent(AgentConfig(
+    model="gpt-4o",
+    enable_tracing=True,
+    log_events=True,
+    event_handlers=[events.append],
+))
+
+response = await agent.run("这个项目里有哪些文件？")
+
+for event in events:
+    print(event.to_dict())
+```
+
+常用事件类型包括 `llm_start`、`llm_end`、`tool_start`、`tool_end`、`tool_error`、`retry` 和 `done`。工具错误会包含 `error_kind`，例如 `invalid_arguments`、`tool_not_found`、`timeout`、`permission_denied` 或 `tool_error`。
+
 ### 多轮对话
 
 ```python

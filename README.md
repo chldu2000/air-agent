@@ -63,6 +63,30 @@ async for event in await agent.run("Write a poem about programming", stream=True
         print(f"\nDone, token usage: {event.usage}")
 ```
 
+### Tracing and Structured Events
+
+Tracing is opt-in. When enabled, the agent emits structured `RunEvent` records for LLM calls, tool calls, retries, errors, and completion.
+
+```python
+from air_agent import Agent, AgentConfig
+
+events = []
+
+agent = Agent(AgentConfig(
+    model="gpt-4o",
+    enable_tracing=True,
+    log_events=True,
+    event_handlers=[events.append],
+))
+
+response = await agent.run("What files are in this project?")
+
+for event in events:
+    print(event.to_dict())
+```
+
+Useful event types include `llm_start`, `llm_end`, `tool_start`, `tool_end`, `tool_error`, `retry`, and `done`. Tool errors include an `error_kind` such as `invalid_arguments`, `tool_not_found`, `timeout`, `permission_denied`, or `tool_error`.
+
 ### Multi-turn Conversation
 
 ```python
