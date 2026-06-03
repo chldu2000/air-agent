@@ -482,13 +482,3 @@ def _stream_tool_call_to_object(tc: dict[str, Any]) -> Any:
             arguments=tc["arguments"],
         ),
     )
-
-
-async def _execute_tool_calls(registry: ToolRegistry, tool_calls: list) -> list[str]:
-    async def _exec_one(tc):
-        try:
-            return await registry.execute(tc.function.name, tc.function.arguments)
-        except Exception as e:
-            return f"Error executing tool '{tc.function.name}': {e}"
-
-    return await asyncio.gather(*[_exec_one(tc) for tc in tool_calls])
