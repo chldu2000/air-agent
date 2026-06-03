@@ -83,6 +83,21 @@ response = await agent.run("这个项目里有哪些文件？")
 
 for event in events:
     print(event.to_dict())
+
+tool_duration_ms = sum(
+    event.duration_ms or 0
+    for event in events
+    if event.type == "tool_end"
+)
+failed_tools = [
+    event
+    for event in events
+    if event.type == "tool_error"
+]
+
+print(f"工具耗时: {tool_duration_ms:.1f}ms")
+for event in failed_tools:
+    print(f"失败工具: {event.name} ({event.error_kind})")
 ```
 
 常用事件类型包括 `llm_start`、`llm_end`、`tool_start`、`tool_end`、`tool_error`、`retry` 和 `done`。工具错误会包含 `error_kind`，例如 `invalid_arguments`、`tool_not_found`、`timeout`、`permission_denied` 或 `tool_error`。

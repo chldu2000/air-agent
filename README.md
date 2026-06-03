@@ -83,6 +83,21 @@ response = await agent.run("What files are in this project?")
 
 for event in events:
     print(event.to_dict())
+
+tool_duration_ms = sum(
+    event.duration_ms or 0
+    for event in events
+    if event.type == "tool_end"
+)
+failed_tools = [
+    event
+    for event in events
+    if event.type == "tool_error"
+]
+
+print(f"Tool time: {tool_duration_ms:.1f}ms")
+for event in failed_tools:
+    print(f"Failed tool: {event.name} ({event.error_kind})")
 ```
 
 Useful event types include `llm_start`, `llm_end`, `tool_start`, `tool_end`, `tool_error`, `retry`, and `done`. Tool errors include an `error_kind` such as `invalid_arguments`, `tool_not_found`, `timeout`, `permission_denied`, or `tool_error`.
