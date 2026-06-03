@@ -317,6 +317,7 @@ class Agent:
                     "model": self.config.model,
                     "messages": history,
                     "stream": True,
+                    "stream_options": {"include_usage": True},
                 }
                 if tools:
                     kwargs["tools"] = tools

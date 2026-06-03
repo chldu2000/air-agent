@@ -91,6 +91,7 @@ async def test_streaming_emits_tracing_events_for_text_response():
             stream_events.append(event)
 
     assert [event.type for event in stream_events] == ["text", "text", "done"]
+    assert mock_create.call_args.kwargs["stream_options"] == {"include_usage": True}
     assert [event.type for event in events] == ["llm_start", "llm_end", "done"]
     assert events[1].usage.total_tokens == 7
     assert events[2].content == "Hello world"
