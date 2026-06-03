@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from types import SimpleNamespace
 from typing import Any, AsyncIterator
 from uuid import uuid4
 
@@ -117,9 +118,9 @@ class Agent:
         stream: bool = False,
     ) -> Response | AsyncIterator[StreamEvent]:
         messages = self._build_messages(message, conversation_id)
-        if stream:
-            return await self._run_stream(messages, conversation_id)
         run_id = f"run_{uuid4().hex}"
+        if stream:
+            return await self._run_stream(messages, conversation_id, run_id)
         return await self._run(messages, conversation_id, run_id=run_id)
 
     async def _run(
@@ -292,7 +293,7 @@ class Agent:
         return last_failure_content
 
     async def _run_stream(
-        self, messages: list[dict], conversation_id: str | None
+        self, messages: list[dict], conversation_id: str | None, run_id: str
     ) -> AsyncIterator[StreamEvent]:
         tools = self._registry.get_openai_tools() or None
         history: list[dict[str, Any]] = list(messages)
@@ -320,6 +321,14 @@ class Agent:
                 if tools:
                     kwargs["tools"] = tools
 
+                await self._emit(
+                    "llm_start",
+                    run_id=run_id,
+                    conversation_id=conversation_id,
+                    iteration=iteration,
+                    metadata={"tools_count": len(tools or []), "stream": True},
+                )
+                llm_start = time.perf_counter()
                 stream = await self._client.chat.completions.create(**kwargs)
 
                 text_content = ""
@@ -359,9 +368,27 @@ class Agent:
                                 if tc_chunk.function.arguments:
                                     tool_calls_map[idx]["arguments"] += tc_chunk.function.arguments
 
+                llm_duration_ms = round((time.perf_counter() - llm_start) * 1000, 3)
+                await self._emit(
+                    "llm_end",
+                    run_id=run_id,
+                    conversation_id=conversation_id,
+                    iteration=iteration,
+                    duration_ms=llm_duration_ms,
+                    usage=usage_data,
+                )
+
                 if not tool_calls_map:
                     assistant_msg = {"role": "assistant", "content": text_content}
                     history.append(assistant_msg)
+                    await self._emit(
+                        "done",
+                        run_id=run_id,
+                        conversation_id=conversation_id,
+                        iteration=iteration,
+                        content=text_content,
+                        usage=usage_data,
+                    )
                     yield StreamEvent(type="done", usage=usage_data)
                     if conversation_id:
                         self._conversations[conversation_id] = history[-20:]
@@ -386,14 +413,14 @@ class Agent:
 
                 results = []
                 for tc in tool_calls_list:
-                    try:
-                        result = await self._registry.execute(tc["name"], tc["arguments"])
-                        results.append(result)
-                        yield StreamEvent(type="tool_result", name=tc["name"], content=result)
-                    except Exception as e:
-                        err_msg = f"Error: {e}"
-                        results.append(err_msg)
-                        yield StreamEvent(type="tool_result", name=tc["name"], content=err_msg)
+                    result = await self._execute_tool_call_with_events(
+                        _stream_tool_call_to_object(tc),
+                        run_id=run_id,
+                        conversation_id=conversation_id,
+                        iteration=iteration,
+                    )
+                    results.append(result)
+                    yield StreamEvent(type="tool_result", name=tc["name"], content=result)
 
                 for tc, tool_result in zip(tool_calls_list, results):
                     history.append({
@@ -402,7 +429,15 @@ class Agent:
                         "content": tool_result,
                     })
 
-            yield StreamEvent(type="done", usage=None)
+            content = "Reached maximum iterations without completion."
+            await self._emit(
+                "done",
+                run_id=run_id,
+                conversation_id=conversation_id,
+                content=content,
+                usage=None,
+            )
+            yield StreamEvent(type="done", content=content, usage=None)
 
         return _stream_generator()
 
@@ -435,6 +470,16 @@ def _usage_from_response(response: Any) -> TokenUsage | None:
         prompt_tokens=response.usage.prompt_tokens,
         completion_tokens=response.usage.completion_tokens,
         total_tokens=response.usage.total_tokens,
+    )
+
+
+def _stream_tool_call_to_object(tc: dict[str, Any]) -> Any:
+    return SimpleNamespace(
+        id=tc["id"],
+        function=SimpleNamespace(
+            name=tc["name"],
+            arguments=tc["arguments"],
+        ),
     )
 
 
