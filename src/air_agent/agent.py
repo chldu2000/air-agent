@@ -360,19 +360,12 @@ class Agent:
     ) -> AsyncIterator[StreamEvent]:
         tools = self._registry.get_openai_tools() or None
         history: list[dict[str, Any]] = list(messages)
-
-        if self._skill_manager and self._skill_manager.skills:
-            matched = await self._skill_router.match(
-                user_input=messages[-1]["content"],
-                skills=self._skill_manager.skills,
-            )
-            for skill in matched:
-                header = f'<skill name="{skill.name}" path="{skill.skill_dir}">\n'
-                header += f"{skill.content}\n</skill>"
-                history.insert(0, {
-                    "role": "system",
-                    "content": header,
-                })
+        history = await self._route_and_inject_skills(
+            history,
+            user_input=messages[-1]["content"],
+            run_id=run_id,
+            conversation_id=conversation_id,
+        )
 
         async def _stream_generator():
             for iteration in range(self.config.max_iterations):
