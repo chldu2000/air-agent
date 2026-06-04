@@ -62,6 +62,9 @@ class LLMSkillRouter(SkillRouter):
         self._model = model
 
     async def route(self, user_input: str, skills: list[Skill]) -> SkillRouteResult:
+        if type(self).route is LLMSkillRouter.route and type(self).match is not LLMSkillRouter.match:
+            return await SkillRouter.route(self, user_input, skills)
+
         if not skills:
             return SkillRouteResult()
 
@@ -98,12 +101,10 @@ class LLMSkillRouter(SkillRouter):
 
             candidate_names = {skill.name.lower() for skill in skills}
             matched_skills: list[Skill] = []
-            matched_names: set[str] = set()
             for skill in skills:
                 normalized_name = skill.name.lower()
-                if normalized_name in seen_names and normalized_name not in matched_names:
+                if normalized_name in seen_names:
                     matched_skills.append(skill)
-                    matched_names.add(normalized_name)
 
             unrecognized_names = [name for name in parsed_names if name not in candidate_names]
             return SkillRouteResult(

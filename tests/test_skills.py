@@ -333,6 +333,56 @@ class TestLLMSkillRouter:
         assert any(record.levelname == "WARNING" for record in caplog.records)
 
     @pytest.mark.asyncio
+    async def test_route_preserves_duplicate_candidate_skills_for_same_name(self):
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "debugging"
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+
+        router = LLMSkillRouter(client=mock_client, model="gpt-4o")
+        first_debugging = self._make_skill("debugging", "Use when backend bugs")
+        second_debugging = self._make_skill("debugging", "Use when frontend bugs")
+        skills = [
+            self._make_skill("brainstorming", "Use when creating"),
+            first_debugging,
+            second_debugging,
+        ]
+
+        result = await router.route("fix it", skills)
+
+        assert result.raw_output == "debugging"
+        assert result.unrecognized_names == []
+        assert result.matched_skills == [first_debugging, second_debugging]
+
+    @pytest.mark.asyncio
+    async def test_route_uses_custom_match_override_without_calling_llm(self):
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock()
+
+        class MatchOverrideRouter(LLMSkillRouter):
+            def __init__(self):
+                super().__init__(client=mock_client, model="gpt-4o")
+                self.match_calls: list[tuple[str, list[Skill]]] = []
+
+            async def match(self, user_input: str, skills: list[Skill]) -> list[Skill]:
+                self.match_calls.append((user_input, skills))
+                return [skills[-1]]
+
+        router = MatchOverrideRouter()
+        skills = [
+            self._make_skill("brainstorming", "Use when creating"),
+            self._make_skill("debugging", "Use when bugs"),
+        ]
+
+        result = await router.route("fix it", skills)
+
+        assert result.matched_skills == [skills[-1]]
+        assert len(router.match_calls) == 1
+        assert router.match_calls[0] == ("fix it", skills)
+        mock_client.chat.completions.create.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_match_returns_relevant_skills(self):
         mock_client = MagicMock()
         mock_response = MagicMock()
@@ -868,3 +918,123 @@ class TestStreamingWithSkills:
             "fallback": "no_skills",
         }
         assert [event.type for event in stream_events] == ["text", "done"]
+
+    @pytest.mark.asyncio
+    async def test_run_falls_back_when_custom_route_implementation_raises(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ):
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        self._create_skill(skills_dir, "debugging", "Use when bugs", "Inspect the failure.")
+
+        events = []
+        config = AgentConfig(
+            model="gpt-4o",
+            api_key="test-key",
+            skills_dir=str(skills_dir),
+            enable_tracing=True,
+            event_handlers=[events.append],
+        )
+        agent = Agent(config)
+
+        class RaisingRouteRouter(SkillRouter):
+            async def match(self, user_input: str, skills: list[Skill]) -> list[Skill]:
+                return []
+
+            async def route(self, user_input: str, skills: list[Skill]) -> SkillRouteResult:
+                raise RuntimeError("route boom")
+
+        agent._skill_router = RaisingRouteRouter()
+
+        final_response = MagicMock()
+        final_response.choices = [MagicMock()]
+        final_response.choices[0].message.content = "fallback response"
+        final_response.choices[0].message.tool_calls = None
+        final_response.usage = None
+
+        with caplog.at_level("WARNING"):
+            with patch.object(agent._client.chat.completions, "create", new_callable=AsyncMock) as mock_create:
+                mock_create.return_value = final_response
+                result = await agent.run("fix it")
+
+        assert result.content == "fallback response"
+        assert [event.type for event in events] == [
+            "skill_route_start",
+            "skill_route_error",
+            "llm_start",
+            "llm_end",
+            "done",
+        ]
+        assert events[1].content == "route boom"
+        assert events[1].duration_ms is not None
+        assert events[1].duration_ms >= 0
+        assert events[1].metadata == {
+            "error_type": "RuntimeError",
+            "fallback": "no_skills",
+        }
+        assert any(record.levelname == "WARNING" for record in caplog.records)
+        create_messages = mock_create.call_args.kwargs["messages"]
+        assert not any("skill name" in message.get("content", "") for message in create_messages)
+
+    @pytest.mark.asyncio
+    async def test_streaming_falls_back_when_custom_route_implementation_raises(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ):
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        self._create_skill(skills_dir, "debugging", "Use when bugs", "Inspect the failure.")
+
+        events = []
+        config = AgentConfig(
+            model="gpt-4o",
+            api_key="test-key",
+            skills_dir=str(skills_dir),
+            enable_tracing=True,
+            event_handlers=[events.append],
+        )
+        agent = Agent(config)
+
+        class RaisingRouteRouter(SkillRouter):
+            async def match(self, user_input: str, skills: list[Skill]) -> list[Skill]:
+                return []
+
+            async def route(self, user_input: str, skills: list[Skill]) -> SkillRouteResult:
+                raise RuntimeError("route boom")
+
+        agent._skill_router = RaisingRouteRouter()
+
+        stream_event = MagicMock()
+        stream_event.choices = [MagicMock()]
+        stream_event.choices[0].delta.content = "Recovered"
+        stream_event.choices[0].delta.tool_calls = None
+        stream_event.usage = MagicMock(prompt_tokens=3, completion_tokens=4, total_tokens=7)
+
+        async def mock_stream():
+            yield stream_event
+
+        with caplog.at_level("WARNING"):
+            with patch.object(agent._client.chat.completions, "create", new_callable=AsyncMock) as mock_create:
+                mock_create.return_value = mock_stream()
+                stream = await agent.run("fix it", stream=True)
+                stream_events = []
+                async for event in stream:
+                    stream_events.append(event)
+
+        assert [event.type for event in events] == [
+            "skill_route_start",
+            "skill_route_error",
+            "llm_start",
+            "llm_end",
+            "done",
+        ]
+        assert events[1].content == "route boom"
+        assert events[1].duration_ms is not None
+        assert events[1].duration_ms >= 0
+        assert events[1].metadata == {
+            "error_type": "RuntimeError",
+            "fallback": "no_skills",
+        }
+        assert [event.type for event in stream_events] == ["text", "done"]
+        assert any(record.levelname == "WARNING" for record in caplog.records)
+        create_messages = mock_create.call_args.kwargs["messages"]
+        assert not any("skill name" in message.get("content", "") for message in create_messages)

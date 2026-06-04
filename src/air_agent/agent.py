@@ -14,7 +14,7 @@ from air_agent.mcp.client import MCPClient
 from air_agent.tools.builtin import register_builtin_tools
 from air_agent.tools.builtin.config import BuiltinToolsConfig
 from air_agent.skills.manager import SkillManager
-from air_agent.skills.router import LLMSkillRouter
+from air_agent.skills.router import LLMSkillRouter, SkillRouteResult
 from air_agent.subagent import delegate as _delegate
 from air_agent.tools.registry import ToolRegistry
 from air_agent.tracing import EventDispatcher
@@ -235,7 +235,17 @@ class Agent:
                 "router": type(self._skill_router).__name__,
             },
         )
-        result = await self._skill_router.route(user_input=user_input, skills=skills)
+        route_start = time.perf_counter()
+        try:
+            result = await self._skill_router.route(user_input=user_input, skills=skills)
+        except Exception as exc:
+            logger.warning("Skill router route failed", exc_info=True)
+            error_type = type(exc).__name__
+            result = SkillRouteResult(
+                duration_ms=round((time.perf_counter() - route_start) * 1000, 3),
+                error_type=error_type,
+                error_message=str(exc) or error_type,
+            )
 
         if result.error_type is not None:
             await self._emit(
