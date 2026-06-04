@@ -533,6 +533,197 @@ class TestAgentSkillsIntegration:
         assert len(skill_msgs) >= 1
         assert f'path="{skill_dir}"' in skill_msgs[0]["content"]
 
+    @pytest.mark.asyncio
+    async def test_skill_routing_emits_events_and_injects_in_current_order(self, tmp_path: Path):
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        brainstorming_dir = self._create_skill(
+            skills_dir,
+            "brainstorming",
+            "Use when creating",
+            "Ask questions one at a time.",
+        )
+        debugging_dir = self._create_skill(
+            skills_dir,
+            "debugging",
+            "Use when bugs",
+            "Inspect the failure.",
+        )
+        events = []
+        config = AgentConfig(
+            model="gpt-4o",
+            api_key="test-key",
+            skills_dir=str(skills_dir),
+            enable_tracing=True,
+            event_handlers=[events.append],
+        )
+        agent = Agent(config)
+
+        routing_response = MagicMock()
+        routing_response.choices = [MagicMock()]
+        routing_response.choices[0].message.content = "brainstorming, debugging, unknown"
+        final_response = MagicMock()
+        final_response.choices = [MagicMock()]
+        final_response.choices[0].message.content = "done"
+        final_response.choices[0].message.tool_calls = None
+        final_response.usage = None
+
+        with patch.object(agent._client.chat.completions, "create", new_callable=AsyncMock) as mock_create:
+            mock_create.side_effect = [routing_response, final_response]
+            result = await agent.run("create something", conversation_id="conv_1")
+
+        assert result.content == "done"
+        assert [event.type for event in events] == [
+            "skill_route_start",
+            "skill_route_end",
+            "skill_injected",
+            "skill_injected",
+            "llm_start",
+            "llm_end",
+            "done",
+        ]
+        route_start, route_end = events[:2]
+        injected_events = events[2:4]
+        assert route_start.conversation_id == "conv_1"
+        assert route_start.metadata == {
+            "candidate_names": ["brainstorming", "debugging"],
+            "candidate_count": 2,
+            "router": "LLMSkillRouter",
+        }
+        assert route_end.content == "brainstorming, debugging, unknown"
+        assert route_end.duration_ms is not None
+        assert route_end.metadata == {
+            "matched_names": ["brainstorming", "debugging"],
+            "unrecognized_names": ["unknown"],
+        }
+        assert [event.name for event in injected_events] == ["brainstorming", "debugging"]
+        assert injected_events[0].metadata == {
+            "path": str(brainstorming_dir),
+            "content_length": len("Ask questions one at a time."),
+        }
+        assert injected_events[1].metadata == {
+            "path": str(debugging_dir),
+            "content_length": len("Inspect the failure."),
+        }
+
+        actual_call = mock_create.call_args_list[1]
+        messages = actual_call.kwargs["messages"]
+        injected_skill_messages = [
+            message["content"]
+            for message in messages[:2]
+            if message["role"] == "system" and "skill name" in message.get("content", "")
+        ]
+        assert injected_skill_messages == [
+            f'<skill name="debugging" path="{debugging_dir}">\nInspect the failure.\n</skill>',
+            f'<skill name="brainstorming" path="{brainstorming_dir}">\nAsk questions one at a time.\n</skill>',
+        ]
+
+    @pytest.mark.asyncio
+    async def test_skill_routing_error_emits_event_and_falls_back(self, tmp_path: Path):
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        self._create_skill(skills_dir, "debugging", "Use when bugs")
+        events = []
+        config = AgentConfig(
+            model="gpt-4o",
+            api_key="test-key",
+            skills_dir=str(skills_dir),
+            enable_tracing=True,
+            event_handlers=[events.append],
+        )
+        agent = Agent(config)
+
+        final_response = MagicMock()
+        final_response.choices = [MagicMock()]
+        final_response.choices[0].message.content = "fallback response"
+        final_response.choices[0].message.tool_calls = None
+        final_response.usage = None
+
+        with patch.object(agent._client.chat.completions, "create", new_callable=AsyncMock) as mock_create:
+            mock_create.side_effect = [RuntimeError("API unavailable"), final_response]
+            result = await agent.run("fix it")
+
+        assert result.content == "fallback response"
+        assert [event.type for event in events] == [
+            "skill_route_start",
+            "skill_route_error",
+            "llm_start",
+            "llm_end",
+            "done",
+        ]
+        route_error = events[1]
+        assert route_error.content == "API unavailable"
+        assert route_error.duration_ms is not None
+        assert route_error.metadata == {
+            "error_type": "RuntimeError",
+            "fallback": "no_skills",
+        }
+
+    @pytest.mark.asyncio
+    async def test_no_skill_match_emits_route_end_without_injection(self, tmp_path: Path):
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        self._create_skill(skills_dir, "debugging", "Use when bugs")
+        events = []
+        config = AgentConfig(
+            model="gpt-4o",
+            api_key="test-key",
+            skills_dir=str(skills_dir),
+            enable_tracing=True,
+            event_handlers=[events.append],
+        )
+        agent = Agent(config)
+
+        routing_response = MagicMock()
+        routing_response.choices = [MagicMock()]
+        routing_response.choices[0].message.content = "none"
+        final_response = MagicMock()
+        final_response.choices = [MagicMock()]
+        final_response.choices[0].message.content = "done"
+        final_response.choices[0].message.tool_calls = None
+        final_response.usage = None
+
+        with patch.object(agent._client.chat.completions, "create", new_callable=AsyncMock) as mock_create:
+            mock_create.side_effect = [routing_response, final_response]
+            await agent.run("hello")
+
+        assert [event.type for event in events[:2]] == [
+            "skill_route_start",
+            "skill_route_end",
+        ]
+        assert not any(event.type == "skill_injected" for event in events)
+
+    @pytest.mark.asyncio
+    async def test_skills_events_are_not_dispatched_when_tracing_disabled(self, tmp_path: Path):
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        self._create_skill(skills_dir, "debugging", "Use when bugs")
+        events = []
+        config = AgentConfig(
+            model="gpt-4o",
+            api_key="test-key",
+            skills_dir=str(skills_dir),
+            enable_tracing=False,
+            event_handlers=[events.append],
+        )
+        agent = Agent(config)
+
+        routing_response = MagicMock()
+        routing_response.choices = [MagicMock()]
+        routing_response.choices[0].message.content = "debugging"
+        final_response = MagicMock()
+        final_response.choices = [MagicMock()]
+        final_response.choices[0].message.content = "done"
+        final_response.choices[0].message.tool_calls = None
+        final_response.usage = None
+
+        with patch.object(agent._client.chat.completions, "create", new_callable=AsyncMock) as mock_create:
+            mock_create.side_effect = [routing_response, final_response]
+            result = await agent.run("fix it")
+
+        assert result.content == "done"
+        assert events == []
+
 
 class TestStreamingWithSkills:
     def _create_skill(self, skills_dir: Path, skill_name: str, description: str, content: str = ""):

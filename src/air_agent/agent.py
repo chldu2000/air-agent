@@ -133,18 +133,12 @@ class Agent:
         tools = self._registry.get_openai_tools() or None
         history: list[dict[str, Any]] = list(messages)
 
-        if self._skill_manager and self._skill_manager.skills:
-            matched = await self._skill_router.match(
-                user_input=messages[-1]["content"],
-                skills=self._skill_manager.skills,
-            )
-            for skill in matched:
-                header = f'<skill name="{skill.name}" path="{skill.skill_dir}">\n'
-                header += f"{skill.content}\n</skill>"
-                history.insert(0, {
-                    "role": "system",
-                    "content": header,
-                })
+        history = await self._route_and_inject_skills(
+            history,
+            user_input=messages[-1]["content"],
+            run_id=run_id,
+            conversation_id=conversation_id,
+        )
 
         for iteration in range(self.config.max_iterations):
             kwargs: dict[str, Any] = {
@@ -217,6 +211,75 @@ class Agent:
             content=content,
         )
         return Response(content=content, history=history)
+
+    async def _route_and_inject_skills(
+        self,
+        history: list[dict[str, Any]],
+        *,
+        user_input: str,
+        run_id: str,
+        conversation_id: str | None,
+    ) -> list[dict[str, Any]]:
+        if not self._skill_manager or not self._skill_manager.skills:
+            return history
+
+        assert self._skill_router is not None
+        skills = self._skill_manager.skills
+        await self._emit(
+            "skill_route_start",
+            run_id=run_id,
+            conversation_id=conversation_id,
+            metadata={
+                "candidate_names": [skill.name for skill in skills],
+                "candidate_count": len(skills),
+                "router": type(self._skill_router).__name__,
+            },
+        )
+        result = await self._skill_router.route(user_input=user_input, skills=skills)
+
+        if result.error_type is not None:
+            await self._emit(
+                "skill_route_error",
+                run_id=run_id,
+                conversation_id=conversation_id,
+                content=result.error_message or "",
+                duration_ms=result.duration_ms,
+                metadata={
+                    "error_type": result.error_type,
+                    "fallback": "no_skills",
+                },
+            )
+            return history
+
+        await self._emit(
+            "skill_route_end",
+            run_id=run_id,
+            conversation_id=conversation_id,
+            content=result.raw_output,
+            duration_ms=result.duration_ms,
+            metadata={
+                "matched_names": [skill.name for skill in result.matched_skills],
+                "unrecognized_names": result.unrecognized_names,
+            },
+        )
+        for skill in result.matched_skills:
+            header = f'<skill name="{skill.name}" path="{skill.skill_dir}">\n'
+            header += f"{skill.content}\n</skill>"
+            history.insert(0, {
+                "role": "system",
+                "content": header,
+            })
+            await self._emit(
+                "skill_injected",
+                run_id=run_id,
+                conversation_id=conversation_id,
+                name=skill.name,
+                metadata={
+                    "path": str(skill.skill_dir),
+                    "content_length": len(skill.content),
+                },
+            )
+        return history
 
     async def _execute_tool_call_with_events(
         self,
