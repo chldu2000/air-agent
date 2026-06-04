@@ -102,6 +102,15 @@ for event in failed_tools:
 
 常用事件类型包括 `llm_start`、`llm_end`、`tool_start`、`tool_end`、`tool_error`、`retry` 和 `done`。工具错误会包含 `error_kind`，例如 `invalid_arguments`、`tool_not_found`、`timeout`、`permission_denied` 或 `tool_error`。
 
+Skills tracing 还会输出：
+
+- `skill_route_start`：包含 `candidate_names`、`candidate_count` 和 `router`
+- `skill_route_end`：`content` 保存路由器的原始输出，另含 `matched_names`、`unrecognized_names` 和 `duration_ms`
+- `skill_route_error`：`content` 为失败信息，另含 `error_type`、`duration_ms` 和 `fallback="no_skills"`
+- `skill_injected`：包含被注入 Skill 的 `name`、`path` 和 `content_length`
+
+`skill_route_end.content` 保存的是模型生成的完整 Router 输出，因此 tracing 日志可能包含敏感的提示词或路由数据；请相应配置日志、存储、访问权限和保留策略。
+
 ### 多轮对话
 
 ```python

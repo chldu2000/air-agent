@@ -102,6 +102,15 @@ for event in failed_tools:
 
 Useful event types include `llm_start`, `llm_end`, `tool_start`, `tool_end`, `tool_error`, `retry`, and `done`. Tool errors include an `error_kind` such as `invalid_arguments`, `tool_not_found`, `timeout`, `permission_denied`, or `tool_error`.
 
+Skills tracing adds:
+
+- `skill_route_start` with `candidate_names`, `candidate_count`, and `router`
+- `skill_route_end` with the router `raw output` in `content`, `matched_names`, `unrecognized_names`, and `duration_ms`
+- `skill_route_error` with the failure message in `content`, `error_type`, `duration_ms`, and `fallback="no_skills"`
+- `skill_injected` with the injected skill `name`, `path`, and `content_length`
+
+`skill_route_end.content` contains the complete model-generated router output. Tracing logs may therefore include sensitive prompt or routing data; enable logging, storage, access, and retention controls accordingly.
+
 ### Multi-turn Conversation
 
 ```python
