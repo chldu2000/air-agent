@@ -12,7 +12,7 @@ from air_agent.types import (
 from air_agent.agent import Agent
 from air_agent.skills.skill import Skill
 from air_agent.skills.manager import SkillManager
-from air_agent.skills.router import SkillRouter, LLMSkillRouter
+from air_agent.skills.router import SkillRouteResult, SkillRouter, LLMSkillRouter
 from air_agent.tools.builtin.config import BuiltinToolsConfig
 
 __all__ = [
@@ -29,6 +29,7 @@ __all__ = [
     "ToolExecutionResult",
     "Skill",
     "SkillManager",
+    "SkillRouteResult",
     "SkillRouter",
     "LLMSkillRouter",
     "BuiltinToolsConfig",

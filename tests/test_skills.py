@@ -4,8 +4,10 @@ import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from air_agent import SkillRouteResult
 from air_agent.skills.manager import SkillManager
-from air_agent.skills.router import LLMSkillRouter
+from air_agent.skills import SkillRouteResult as SkillsSkillRouteResult
+from air_agent.skills.router import LLMSkillRouter, SkillRouter
 from air_agent.skills.skill import Skill, parse_skill_file
 
 
@@ -263,6 +265,58 @@ class TestLLMSkillRouter:
 
         result = await router.match("test query", skills)
         assert len(result) == 0
+
+
+class TestSkillRouteResultAndRouting:
+    def _make_skill(self, name: str, description: str) -> Skill:
+        fake_dir = Path("/fake") / name
+        return Skill(
+            name=name,
+            description=description,
+            content=f"# {name}\nInstructions for {name}",
+            path=fake_dir / "SKILL.md",
+            skill_dir=fake_dir,
+        )
+
+    def test_skill_route_result_is_exported_from_top_level(self):
+        assert SkillRouteResult.__name__ == "SkillRouteResult"
+        assert SkillRouteResult is SkillsSkillRouteResult
+
+    @pytest.mark.asyncio
+    async def test_route_wraps_legacy_match_with_duration(self):
+        class LegacyRouter(SkillRouter):
+            async def match(self, user_input: str, skills: list[Skill]) -> list[Skill]:
+                return [skills[0]]
+
+        router = LegacyRouter()
+        skill = self._make_skill("brainstorming", "Use when creating")
+
+        result = await router.route("help me brainstorm", [skill])
+
+        assert result.matched_skills == [skill]
+        assert result.raw_output == ""
+        assert result.error_type is None
+        assert result.error_message is None
+        assert result.duration_ms is not None
+        assert result.duration_ms >= 0
+
+    @pytest.mark.asyncio
+    async def test_route_returns_error_result_when_match_raises(self):
+        class FailingRouter(SkillRouter):
+            async def match(self, user_input: str, skills: list[Skill]) -> list[Skill]:
+                raise RuntimeError("boom")
+
+        router = FailingRouter()
+        skill = self._make_skill("brainstorming", "Use when creating")
+
+        result = await router.route("help me brainstorm", [skill])
+
+        assert result.matched_skills == []
+        assert result.raw_output == ""
+        assert result.error_type == "RuntimeError"
+        assert result.error_message == "boom"
+        assert result.duration_ms is not None
+        assert result.duration_ms >= 0
 
 
 from air_agent.agent import Agent

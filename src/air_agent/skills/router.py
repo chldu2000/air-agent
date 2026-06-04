@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from time import perf_counter
 from typing import Any
 
 from air_agent.skills.skill import Skill
@@ -15,10 +17,41 @@ If no skills are relevant, respond with "none". \
 Do not include any other text or explanation."""
 
 
+@dataclass
+class SkillRouteResult:
+    matched_skills: list[Skill] = field(default_factory=list)
+    raw_output: str = ""
+    duration_ms: float | None = None
+    unrecognized_names: list[str] = field(default_factory=list)
+    error_type: str | None = None
+    error_message: str | None = None
+
+
+def _elapsed_ms(start: float) -> float:
+    return round((perf_counter() - start) * 1000, 3)
+
+
 class SkillRouter(ABC):
     @abstractmethod
     async def match(self, user_input: str, skills: list[Skill]) -> list[Skill]:
         """Match user input against available skills."""
+
+    async def route(self, user_input: str, skills: list[Skill]) -> SkillRouteResult:
+        start = perf_counter()
+        try:
+            matched_skills = await self.match(user_input, skills)
+        except Exception as exc:
+            logger.warning("Skill routing failed", exc_info=True)
+            return SkillRouteResult(
+                duration_ms=_elapsed_ms(start),
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+            )
+
+        return SkillRouteResult(
+            matched_skills=matched_skills,
+            duration_ms=_elapsed_ms(start),
+        )
 
 
 class LLMSkillRouter(SkillRouter):
