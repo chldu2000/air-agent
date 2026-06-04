@@ -221,6 +221,87 @@ class TestLLMSkillRouter:
         )
 
     @pytest.mark.asyncio
+    async def test_route_returns_raw_output_matches_unknowns_and_dedups(self):
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "  debugging, BRAINSTORMING, unknown, debugging, UNKNOWN,  brainstorming  "
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+
+        router = LLMSkillRouter(client=mock_client, model="gpt-4o")
+        skills = [
+            self._make_skill("brainstorming", "Use when creating"),
+            self._make_skill("debugging", "Use when bugs"),
+            self._make_skill("deploy", "Use when deploying"),
+        ]
+
+        result = await router.route("I need to brainstorm ideas", skills)
+        assert result.raw_output == "  debugging, BRAINSTORMING, unknown, debugging, UNKNOWN,  brainstorming  "
+        assert [skill.name for skill in result.matched_skills] == ["brainstorming", "debugging"]
+        assert result.unrecognized_names == ["unknown"]
+        assert result.error_type is None
+        assert result.error_message is None
+        assert result.duration_ms is not None
+        assert result.duration_ms >= 0
+
+    @pytest.mark.asyncio
+    async def test_route_treats_none_and_empty_as_successful_no_match(self):
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = None
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+
+        router = LLMSkillRouter(client=mock_client, model="gpt-4o")
+        skills = [self._make_skill("deploy", "Use when deploying")]
+
+        result = await router.route("Tell me a joke", skills)
+        assert result.raw_output == ""
+        assert result.matched_skills == []
+        assert result.unrecognized_names == []
+        assert result.error_type is None
+        assert result.error_message is None
+
+        mock_response.choices[0].message.content = "   "
+        result = await router.route("Tell me a joke", skills)
+        assert result.raw_output == "   "
+        assert result.matched_skills == []
+        assert result.unrecognized_names == []
+        assert result.error_type is None
+        assert result.error_message is None
+
+    @pytest.mark.asyncio
+    async def test_route_returns_default_result_without_skills(self):
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock()
+
+        router = LLMSkillRouter(client=mock_client, model="gpt-4o")
+        result = await router.route("Tell me a joke", [])
+
+        assert result == SkillRouteResult()
+        mock_client.chat.completions.create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_route_returns_error_result_on_llm_error(self, caplog: pytest.LogCaptureFixture):
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(side_effect=Exception("API error"))
+
+        router = LLMSkillRouter(client=mock_client, model="gpt-4o")
+        skills = [self._make_skill("test", "Use when testing")]
+
+        with caplog.at_level("WARNING"):
+            result = await router.route("test query", skills)
+
+        assert result.raw_output == ""
+        assert result.matched_skills == []
+        assert result.unrecognized_names == []
+        assert result.error_type == "Exception"
+        assert result.error_message == "API error"
+        assert result.duration_ms is not None
+        assert result.duration_ms >= 0
+        assert any(record.levelname == "WARNING" for record in caplog.records)
+
+    @pytest.mark.asyncio
     async def test_match_returns_relevant_skills(self):
         mock_client = MagicMock()
         mock_response = MagicMock()
@@ -236,10 +317,8 @@ class TestLLMSkillRouter:
         ]
 
         result = await router.match("I need to brainstorm ideas", skills)
-        names = {s.name for s in result}
-        assert "brainstorming" in names
-        assert "debugging" in names
-        assert "deploy" not in names
+        names = [s.name for s in result]
+        assert names == ["brainstorming", "debugging"]
 
     @pytest.mark.asyncio
     async def test_match_returns_empty_when_no_match(self):
