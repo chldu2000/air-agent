@@ -270,6 +270,14 @@ class TestLLMSkillRouter:
         assert result.error_type is None
         assert result.error_message is None
 
+        mock_response.choices[0].message.content = "none"
+        result = await router.route("Tell me a joke", skills)
+        assert result.raw_output == "none"
+        assert result.matched_skills == []
+        assert result.unrecognized_names == []
+        assert result.error_type is None
+        assert result.error_message is None
+
     @pytest.mark.asyncio
     async def test_route_returns_default_result_without_skills(self):
         mock_client = MagicMock()
