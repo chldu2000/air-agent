@@ -104,10 +104,10 @@ Useful event types include `llm_start`, `llm_end`, `tool_start`, `tool_end`, `to
 
 Skills tracing adds:
 
-- `skill_route_start` with `candidate_names`, `candidate_count`, and `router`
-- `skill_route_end` with the router `raw output` in `content`, `matched_names`, `unrecognized_names`, and `duration_ms`
-- `skill_route_error` with the failure message in `content`, `error_type`, `duration_ms`, and `fallback="no_skills"`
-- `skill_injected` with the injected skill `name`, `path`, and `content_length`
+- `skill_route_start` with `metadata.candidate_names`, `metadata.candidate_count`, and `metadata.router`
+- `skill_route_end` with the router `raw output` in `content`, `metadata.matched_names`, `metadata.unrecognized_names`, and `duration_ms`
+- `skill_route_error` with the failure message in `content`, `metadata.error_type`, `metadata.fallback="no_skills"`, and `duration_ms`
+- `skill_injected` with the injected skill `name`, `metadata.path`, and `metadata.content_length`
 
 `skill_route_end.content` contains the complete model-generated router output. Tracing logs may therefore include sensitive prompt or routing data; enable logging, storage, access, and retention controls accordingly.
 
