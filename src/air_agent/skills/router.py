@@ -80,6 +80,38 @@ class LLMSkillRouter(SkillRouter):
             )
             raw_output = response.choices[0].message.content
             raw_output = raw_output if raw_output is not None else ""
+            parsed_output = raw_output.strip().lower()
+            if not parsed_output or parsed_output == "none":
+                return SkillRouteResult(
+                    raw_output=raw_output,
+                    duration_ms=_elapsed_ms(start),
+                )
+
+            parsed_names: list[str] = []
+            seen_names: set[str] = set()
+            for part in parsed_output.split(","):
+                name = part.strip().lower()
+                if not name or name in seen_names:
+                    continue
+                seen_names.add(name)
+                parsed_names.append(name)
+
+            candidate_names = {skill.name.lower() for skill in skills}
+            matched_skills: list[Skill] = []
+            matched_names: set[str] = set()
+            for skill in skills:
+                normalized_name = skill.name.lower()
+                if normalized_name in seen_names and normalized_name not in matched_names:
+                    matched_skills.append(skill)
+                    matched_names.add(normalized_name)
+
+            unrecognized_names = [name for name in parsed_names if name not in candidate_names]
+            return SkillRouteResult(
+                matched_skills=matched_skills,
+                raw_output=raw_output,
+                duration_ms=_elapsed_ms(start),
+                unrecognized_names=unrecognized_names,
+            )
         except Exception as exc:
             logger.warning("Skill routing LLM call failed", exc_info=True)
             return SkillRouteResult(
@@ -87,39 +119,6 @@ class LLMSkillRouter(SkillRouter):
                 error_type=type(exc).__name__,
                 error_message=str(exc),
             )
-
-        parsed_output = raw_output.strip().lower()
-        if not parsed_output or parsed_output == "none":
-            return SkillRouteResult(
-                raw_output=raw_output,
-                duration_ms=_elapsed_ms(start),
-            )
-
-        parsed_names: list[str] = []
-        seen_names: set[str] = set()
-        for part in parsed_output.split(","):
-            name = part.strip().lower()
-            if not name or name in seen_names:
-                continue
-            seen_names.add(name)
-            parsed_names.append(name)
-
-        candidate_names = {skill.name.lower() for skill in skills}
-        matched_skills: list[Skill] = []
-        matched_names: set[str] = set()
-        for skill in skills:
-            normalized_name = skill.name.lower()
-            if normalized_name in seen_names and normalized_name not in matched_names:
-                matched_skills.append(skill)
-                matched_names.add(normalized_name)
-
-        unrecognized_names = [name for name in parsed_names if name not in candidate_names]
-        return SkillRouteResult(
-            matched_skills=matched_skills,
-            raw_output=raw_output,
-            duration_ms=_elapsed_ms(start),
-            unrecognized_names=unrecognized_names,
-        )
 
     async def match(self, user_input: str, skills: list[Skill]) -> list[Skill]:
         return (await self.route(user_input, skills)).matched_skills

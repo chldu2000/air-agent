@@ -310,6 +310,29 @@ class TestLLMSkillRouter:
         assert any(record.levelname == "WARNING" for record in caplog.records)
 
     @pytest.mark.asyncio
+    async def test_route_returns_error_result_for_malformed_content(self, caplog: pytest.LogCaptureFixture):
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = ["brainstorming"]
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+
+        router = LLMSkillRouter(client=mock_client, model="gpt-4o")
+        skills = [self._make_skill("brainstorming", "Use when creating")]
+
+        with caplog.at_level("WARNING"):
+            result = await router.route("help me brainstorm", skills)
+
+        assert result.raw_output == ""
+        assert result.matched_skills == []
+        assert result.unrecognized_names == []
+        assert result.error_type == "AttributeError"
+        assert "strip" in (result.error_message or "")
+        assert result.duration_ms is not None
+        assert result.duration_ms >= 0
+        assert any(record.levelname == "WARNING" for record in caplog.records)
+
+    @pytest.mark.asyncio
     async def test_match_returns_relevant_skills(self):
         mock_client = MagicMock()
         mock_response = MagicMock()
