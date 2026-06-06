@@ -5,6 +5,7 @@ from air_agent.providers.types import (
     LLMStreamToolCallDelta,
     LLMToolCall,
 )
+from air_agent.providers.openai import OpenAIProvider
 
 __all__ = [
     "LLMToolCall",
@@ -12,4 +13,5 @@ __all__ = [
     "LLMStreamToolCallDelta",
     "LLMStreamChunk",
     "LLMProvider",
+    "OpenAIProvider",
 ]
