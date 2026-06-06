@@ -32,6 +32,12 @@ class SkillRouteResult:
     error_message: str | None = None
 
 
+_legacy_match_route_result: ContextVar[SkillRouteResult | None] = ContextVar(
+    "_legacy_match_route_result",
+    default=None,
+)
+
+
 def _elapsed_ms(start: float) -> float:
     return round((perf_counter() - start) * 1000, 3)
 
@@ -72,11 +78,28 @@ class LLMSkillRouter(SkillRouter):
             and type(self).match is not LLMSkillRouter.match
             and not _delegating_to_legacy_match.get()
         ):
-            token = _delegating_to_legacy_match.set(True)
+            delegation_token = _delegating_to_legacy_match.set(True)
+            result_token = _legacy_match_route_result.set(None)
+            start = perf_counter()
             try:
-                return await SkillRouter.route(self, user_input, skills)
+                matched_skills = await self.match(user_input, skills)
+                route_result = _legacy_match_route_result.get()
+                if route_result is not None:
+                    return route_result
+                return SkillRouteResult(
+                    matched_skills=matched_skills,
+                    duration_ms=_elapsed_ms(start),
+                )
+            except Exception as exc:
+                logger.warning("Skill routing failed", exc_info=True)
+                return SkillRouteResult(
+                    duration_ms=_elapsed_ms(start),
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                )
             finally:
-                _delegating_to_legacy_match.reset(token)
+                _legacy_match_route_result.reset(result_token)
+                _delegating_to_legacy_match.reset(delegation_token)
 
         if not skills:
             return SkillRouteResult()
@@ -134,4 +157,7 @@ class LLMSkillRouter(SkillRouter):
             )
 
     async def match(self, user_input: str, skills: list[Skill]) -> list[Skill]:
-        return (await self.route(user_input, skills)).matched_skills
+        result = await self.route(user_input, skills)
+        if _delegating_to_legacy_match.get():
+            _legacy_match_route_result.set(result)
+        return result.matched_skills

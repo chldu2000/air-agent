@@ -405,7 +405,7 @@ class TestLLMSkillRouter:
         mock_client = MagicMock()
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "debugging"
+        mock_response.choices[0].message.content = "debugging, unknown"
         mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
 
         class SuperMatchRouter(LLMSkillRouter):
@@ -427,8 +427,33 @@ class TestLLMSkillRouter:
 
         assert [skill.name for skill in result.matched_skills] == ["debugging"]
         assert router.match_calls == 1
+        assert result.raw_output == "debugging, unknown"
+        assert result.unrecognized_names == ["unknown"]
         assert result.error_type is None
         mock_client.chat.completions.create.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_route_preserves_super_match_error_result(self):
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=RuntimeError("API down")
+        )
+
+        class SuperMatchRouter(LLMSkillRouter):
+            async def match(self, user_input: str, skills: list[Skill]) -> list[Skill]:
+                return await super().match(user_input, skills)
+
+        router = SuperMatchRouter(client=mock_client, model="gpt-4o")
+        skills = [self._make_skill("debugging", "Use when bugs")]
+
+        result = await router.route("fix it", skills)
+
+        assert result.matched_skills == []
+        assert result.raw_output == ""
+        assert result.unrecognized_names == []
+        assert result.error_type == "RuntimeError"
+        assert result.error_message == "API down"
+        assert result.duration_ms is not None
 
     @pytest.mark.asyncio
     async def test_concurrent_super_match_overrides_each_use_custom_match(self):
