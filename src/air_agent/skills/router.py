@@ -60,10 +60,19 @@ class LLMSkillRouter(SkillRouter):
     def __init__(self, client: Any, model: str) -> None:
         self._client = client
         self._model = model
+        self._delegating_to_legacy_match = False
 
     async def route(self, user_input: str, skills: list[Skill]) -> SkillRouteResult:
-        if type(self).route is LLMSkillRouter.route and type(self).match is not LLMSkillRouter.match:
-            return await SkillRouter.route(self, user_input, skills)
+        if (
+            type(self).route is LLMSkillRouter.route
+            and type(self).match is not LLMSkillRouter.match
+            and not self._delegating_to_legacy_match
+        ):
+            self._delegating_to_legacy_match = True
+            try:
+                return await SkillRouter.route(self, user_input, skills)
+            finally:
+                self._delegating_to_legacy_match = False
 
         if not skills:
             return SkillRouteResult()
@@ -99,11 +108,10 @@ class LLMSkillRouter(SkillRouter):
                 seen_names.add(name)
                 parsed_names.append(name)
 
-            candidate_names = {skill.name.lower() for skill in skills}
+            candidate_names = {skill.name for skill in skills}
             matched_skills: list[Skill] = []
             for skill in skills:
-                normalized_name = skill.name.lower()
-                if normalized_name in seen_names:
+                if skill.name in seen_names:
                     matched_skills.append(skill)
 
             unrecognized_names = [name for name in parsed_names if name not in candidate_names]

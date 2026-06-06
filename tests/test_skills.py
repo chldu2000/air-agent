@@ -356,6 +356,23 @@ class TestLLMSkillRouter:
         assert result.matched_skills == [first_debugging, second_debugging]
 
     @pytest.mark.asyncio
+    async def test_route_keeps_candidate_name_matching_case_sensitive(self):
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "debugging"
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+
+        router = LLMSkillRouter(client=mock_client, model="gpt-4o")
+        skills = [self._make_skill("Debugging", "Use when bugs")]
+
+        result = await router.route("fix it", skills)
+
+        assert result.raw_output == "debugging"
+        assert result.matched_skills == []
+        assert result.unrecognized_names == ["debugging"]
+
+    @pytest.mark.asyncio
     async def test_route_uses_custom_match_override_without_calling_llm(self):
         mock_client = MagicMock()
         mock_client.chat.completions.create = AsyncMock()
@@ -381,6 +398,36 @@ class TestLLMSkillRouter:
         assert len(router.match_calls) == 1
         assert router.match_calls[0] == ("fix it", skills)
         mock_client.chat.completions.create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_route_supports_custom_match_override_that_calls_super_match(self):
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "debugging"
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+
+        class SuperMatchRouter(LLMSkillRouter):
+            def __init__(self):
+                super().__init__(client=mock_client, model="gpt-4o")
+                self.match_calls = 0
+
+            async def match(self, user_input: str, skills: list[Skill]) -> list[Skill]:
+                self.match_calls += 1
+                return await super().match(user_input, skills)
+
+        router = SuperMatchRouter()
+        skills = [
+            self._make_skill("brainstorming", "Use when creating"),
+            self._make_skill("debugging", "Use when bugs"),
+        ]
+
+        result = await router.route("fix it", skills)
+
+        assert [skill.name for skill in result.matched_skills] == ["debugging"]
+        assert router.match_calls == 1
+        assert result.error_type is None
+        mock_client.chat.completions.create.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_match_returns_relevant_skills(self):
