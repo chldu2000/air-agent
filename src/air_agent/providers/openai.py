@@ -65,10 +65,10 @@ class OpenAIProvider:
         kwargs: dict[str, Any] = {
             "model": model,
             "messages": messages,
-            "stream": True,
-            "stream_options": {"include_usage": True},
             **options,
         }
+        kwargs["stream"] = True
+        kwargs["stream_options"] = {"include_usage": True}
         if tools:
             kwargs["tools"] = tools
 
@@ -91,10 +91,18 @@ class OpenAIProvider:
 def _usage_from_object(usage: Any) -> TokenUsage | None:
     if usage is None:
         return None
+    prompt_tokens = getattr(usage, "prompt_tokens", None)
+    completion_tokens = getattr(usage, "completion_tokens", None)
+    total_tokens = getattr(usage, "total_tokens", None)
+    if not all(
+        isinstance(value, int)
+        for value in (prompt_tokens, completion_tokens, total_tokens)
+    ):
+        return None
     return TokenUsage(
-        prompt_tokens=usage.prompt_tokens,
-        completion_tokens=usage.completion_tokens,
-        total_tokens=usage.total_tokens,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
     )
 
 

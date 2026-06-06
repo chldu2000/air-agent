@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -117,6 +118,26 @@ async def test_complete_maps_none_content_to_empty_string():
 
 
 @pytest.mark.asyncio
+async def test_complete_returns_none_usage_for_partial_usage_payload():
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(
+        return_value=_mock_response(
+            content="hello",
+            usage=SimpleNamespace(prompt_tokens=4, completion_tokens=None, total_tokens=9),
+        )
+    )
+
+    provider = OpenAIProvider(client=client)
+    response = await provider.complete(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": "hi"}],
+    )
+
+    assert response.content == "hello"
+    assert response.usage is None
+
+
+@pytest.mark.asyncio
 async def test_stream_maps_deltas_and_usage_and_omits_empty_tools():
     client = MagicMock()
     client.chat.completions.create = AsyncMock()
@@ -141,6 +162,8 @@ async def test_stream_maps_deltas_and_usage_and_omits_empty_tools():
         messages=[{"role": "user", "content": "hi"}],
         tools=[],
         temperature=0.3,
+        stream=False,
+        stream_options={},
     ):
         chunks.append(chunk)
 
@@ -163,4 +186,3 @@ async def test_stream_maps_deltas_and_usage_and_omits_empty_tools():
         stream_options={"include_usage": True},
         temperature=0.3,
     )
-

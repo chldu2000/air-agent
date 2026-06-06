@@ -10,6 +10,7 @@ from air_agent import (
     LLMStreamChunk,
     LLMStreamToolCallDelta,
     LLMToolCall,
+    OpenAIProvider,
 )
 from air_agent.providers import (
     LLMProvider as ProvidersLLMProvider,
@@ -17,6 +18,7 @@ from air_agent.providers import (
     LLMStreamChunk as ProvidersLLMStreamChunk,
     LLMStreamToolCallDelta as ProvidersLLMStreamToolCallDelta,
     LLMToolCall as ProvidersLLMToolCall,
+    OpenAIProvider as ProvidersOpenAIProvider,
 )
 
 
@@ -49,6 +51,7 @@ def test_provider_package_reexports_match_top_level():
     assert ProvidersLLMStreamToolCallDelta is LLMStreamToolCallDelta
     assert ProvidersLLMStreamChunk is LLMStreamChunk
     assert ProvidersLLMProvider is LLMProvider
+    assert ProvidersOpenAIProvider is OpenAIProvider
 
 
 class FakeProvider:
