@@ -15,6 +15,15 @@ class TestProviderConfig:
 
         assert config.provider is provider
 
+    def test_positional_constructor_order_is_preserved(self):
+        config = AgentConfig("m", "k", "b", "sys")
+
+        assert config.model == "m"
+        assert config.api_key == "k"
+        assert config.base_url == "b"
+        assert config.system_prompt == "sys"
+        assert config.provider is None
+
 
 class TestFromJson:
     def test_basic_fields(self, tmp_path):
@@ -114,6 +123,15 @@ class TestFromJson:
         config = AgentConfig.from_json(str(config_file))
 
         assert config.provider == "openai"
+
+    def test_non_string_provider_value_is_rejected(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "provider": {"name": "openai"},
+        }))
+
+        with pytest.raises(ValueError, match="provider must be a string or null"):
+            AgentConfig.from_json(str(config_file))
 
 
 class TestFromEnv:

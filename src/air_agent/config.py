@@ -59,7 +59,6 @@ class AgentConfig:
     model: str = "gpt-4o"
     api_key: str | None = None
     base_url: str | None = None
-    provider: Any = None
     system_prompt: str | None = None
     max_iterations: int = 20
     tool_timeout: float = 30.0
@@ -71,6 +70,7 @@ class AgentConfig:
     log_events: bool = False
     event_handlers: list[Callable[[Any], Any]] | None = None
     max_tool_retries: int = 0
+    provider: Any = None
 
     def __post_init__(self):
         if self.api_key is None:
@@ -83,6 +83,9 @@ class AgentConfig:
 
         mcp_servers = [_parse_mcp_server(s) for s in data.pop("mcp_servers", [])]
         builtin_raw = data.pop("builtin_tools", None)
+        provider_raw = data.get("provider")
+        if "provider" in data and provider_raw is not None and not isinstance(provider_raw, str):
+            raise ValueError("provider must be a string or null")
         field_names = {
             f.name for f in cls.__dataclass_fields__.values() if f.name != "event_handlers"
         }
