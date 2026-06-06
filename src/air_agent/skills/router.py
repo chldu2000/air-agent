@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any
@@ -9,6 +10,10 @@ from typing import Any
 from air_agent.skills.skill import Skill
 
 logger = logging.getLogger(__name__)
+_delegating_to_legacy_match: ContextVar[bool] = ContextVar(
+    "_delegating_to_legacy_match",
+    default=False,
+)
 
 _ROUTING_SYSTEM_PROMPT = """\
 You are a skill router. Given a user input and a list of available skills, \
@@ -60,19 +65,18 @@ class LLMSkillRouter(SkillRouter):
     def __init__(self, client: Any, model: str) -> None:
         self._client = client
         self._model = model
-        self._delegating_to_legacy_match = False
 
     async def route(self, user_input: str, skills: list[Skill]) -> SkillRouteResult:
         if (
             type(self).route is LLMSkillRouter.route
             and type(self).match is not LLMSkillRouter.match
-            and not self._delegating_to_legacy_match
+            and not _delegating_to_legacy_match.get()
         ):
-            self._delegating_to_legacy_match = True
+            token = _delegating_to_legacy_match.set(True)
             try:
                 return await SkillRouter.route(self, user_input, skills)
             finally:
-                self._delegating_to_legacy_match = False
+                _delegating_to_legacy_match.reset(token)
 
         if not skills:
             return SkillRouteResult()

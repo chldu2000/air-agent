@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -428,6 +429,54 @@ class TestLLMSkillRouter:
         assert router.match_calls == 1
         assert result.error_type is None
         mock_client.chat.completions.create.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_super_match_overrides_each_use_custom_match(self):
+        mock_client = MagicMock()
+        response_one = MagicMock()
+        response_one.choices = [MagicMock()]
+        response_one.choices[0].message.content = "debugging"
+        response_two = MagicMock()
+        response_two.choices = [MagicMock()]
+        response_two.choices[0].message.content = "debugging"
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=[response_one, response_two]
+        )
+
+        class ConcurrentSuperMatchRouter(LLMSkillRouter):
+            def __init__(self):
+                super().__init__(client=mock_client, model="gpt-4o")
+                self.match_calls = 0
+                self.both_matches_started = asyncio.Event()
+
+            async def match(self, user_input: str, skills: list[Skill]) -> list[Skill]:
+                self.match_calls += 1
+                if self.match_calls == 2:
+                    self.both_matches_started.set()
+                await self.both_matches_started.wait()
+                return await super().match(user_input, skills)
+
+        router = ConcurrentSuperMatchRouter()
+        skills = [
+            self._make_skill("brainstorming", "Use when creating"),
+            self._make_skill("debugging", "Use when bugs"),
+        ]
+
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                router.route("fix it", skills),
+                router.route("fix it too", skills),
+            ),
+            timeout=1,
+        )
+
+        assert router.match_calls == 2
+        assert [
+            [skill.name for skill in result.matched_skills]
+            for result in results
+        ] == [["debugging"], ["debugging"]]
+        assert all(result.error_type is None for result in results)
+        assert mock_client.chat.completions.create.await_count == 2
 
     @pytest.mark.asyncio
     async def test_match_returns_relevant_skills(self):
