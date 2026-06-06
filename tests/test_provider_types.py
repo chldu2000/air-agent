@@ -10,7 +10,6 @@ from air_agent import (
     LLMStreamChunk,
     LLMStreamToolCallDelta,
     LLMToolCall,
-    TokenUsage,
 )
 from air_agent.providers import (
     LLMProvider as ProvidersLLMProvider,
@@ -18,7 +17,6 @@ from air_agent.providers import (
     LLMStreamChunk as ProvidersLLMStreamChunk,
     LLMStreamToolCallDelta as ProvidersLLMStreamToolCallDelta,
     LLMToolCall as ProvidersLLMToolCall,
-    TokenUsage as ProvidersTokenUsage,
 )
 
 
@@ -46,7 +44,6 @@ def test_provider_types_default_shapes():
 
 
 def test_provider_package_reexports_match_top_level():
-    assert ProvidersTokenUsage is TokenUsage
     assert ProvidersLLMToolCall is LLMToolCall
     assert ProvidersLLMResponse is LLMResponse
     assert ProvidersLLMStreamToolCallDelta is LLMStreamToolCallDelta
@@ -58,18 +55,21 @@ class FakeProvider:
     supports_tools = True
     supports_streaming = True
 
-    async def complete(self, messages, tools=None):
+    async def complete(self, *, model, messages, tools=None, **options):
+        assert model == "test-model"
         assert messages == [{"role": "user", "content": "hello"}]
         assert tools == [{"type": "function", "function": {"name": "lookup"}}]
+        assert options == {"temperature": 0.2}
         return LLMResponse(
             content="done",
             tool_calls=[LLMToolCall(id="call_1", name="lookup", arguments="{}")],
-            usage=TokenUsage(prompt_tokens=1, completion_tokens=2, total_tokens=3),
         )
 
-    async def stream(self, messages, tools=None) -> AsyncIterator[LLMStreamChunk]:
+    async def stream(self, *, model, messages, tools=None, **options) -> AsyncIterator[LLMStreamChunk]:
+        assert model == "test-model"
         assert messages == [{"role": "user", "content": "hello"}]
         assert tools is None
+        assert options == {"temperature": 0.2}
         yield LLMStreamChunk(content_delta="d")
         yield LLMStreamChunk(
             tool_call_deltas=[
@@ -81,20 +81,24 @@ class FakeProvider:
 @pytest.mark.asyncio
 async def test_provider_protocol_can_be_assigned_and_used():
     provider: LLMProvider = FakeProvider()
-    assert isinstance(provider, LLMProvider)
     assert provider.supports_tools is True
     assert provider.supports_streaming is True
 
     response = await provider.complete(
+        model="test-model",
         messages=[{"role": "user", "content": "hello"}],
         tools=[{"type": "function", "function": {"name": "lookup"}}],
+        temperature=0.2,
     )
     assert response.content == "done"
     assert response.tool_calls[0].name == "lookup"
-    assert response.usage.total_tokens == 3
 
     chunks = []
-    async for chunk in provider.stream(messages=[{"role": "user", "content": "hello"}]):
+    async for chunk in provider.stream(
+        model="test-model",
+        messages=[{"role": "user", "content": "hello"}],
+        temperature=0.2,
+    ):
         chunks.append(chunk)
 
     assert chunks[0].content_delta == "d"

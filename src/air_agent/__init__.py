@@ -7,7 +7,6 @@ from air_agent.providers import (
     LLMStreamChunk,
     LLMStreamToolCallDelta,
     LLMToolCall,
-    TokenUsage,
 )
 from air_agent.types import (
     Response,
@@ -35,7 +34,6 @@ __all__ = [
     "SubagentResult",
     "ToolErrorKind",
     "ToolExecutionResult",
-    "TokenUsage",
     "Skill",
     "SkillManager",
     "SkillRouteResult",

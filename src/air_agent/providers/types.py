@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol
 
 from air_agent.types import TokenUsage
 
@@ -36,23 +36,26 @@ class LLMStreamChunk:
     usage: TokenUsage | None = None
 
 
-@runtime_checkable
 class LLMProvider(Protocol):
     supports_tools: bool
     supports_streaming: bool
 
     async def complete(
         self,
-        messages: list[dict[str, Any]],
         *,
+        model: str,
+        messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
+        **options: Any,
     ) -> LLMResponse: ...
 
     async def stream(
         self,
-        messages: list[dict[str, Any]],
         *,
+        model: str,
+        messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
+        **options: Any,
     ) -> AsyncIterator[LLMStreamChunk]: ...
 
 
@@ -62,5 +65,4 @@ __all__ = [
     "LLMStreamToolCallDelta",
     "LLMStreamChunk",
     "LLMProvider",
-    "TokenUsage",
 ]

@@ -4,7 +4,6 @@ from air_agent.providers.types import (
     LLMStreamChunk,
     LLMStreamToolCallDelta,
     LLMToolCall,
-    TokenUsage,
 )
 
 __all__ = [
@@ -13,5 +12,4 @@ __all__ = [
     "LLMStreamToolCallDelta",
     "LLMStreamChunk",
     "LLMProvider",
-    "TokenUsage",
 ]
