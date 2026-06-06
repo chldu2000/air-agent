@@ -7,10 +7,9 @@ from types import SimpleNamespace
 from typing import Any, AsyncIterator
 from uuid import uuid4
 
-from openai import AsyncOpenAI
-
 from air_agent.config import AgentConfig, SubagentConfig
 from air_agent.mcp.client import MCPClient
+from air_agent.providers import LLMToolCall, OpenAIProvider
 from air_agent.tools.builtin import register_builtin_tools
 from air_agent.tools.builtin.config import BuiltinToolsConfig
 from air_agent.skills.manager import SkillManager
@@ -26,11 +25,8 @@ logger = logging.getLogger(__name__)
 class Agent:
     def __init__(self, config: AgentConfig) -> None:
         self.config = config
-        self._client = AsyncOpenAI(
-            api_key=config.api_key,
-            base_url=config.base_url,
-            default_headers=config.default_headers,
-        )
+        self._provider = _build_provider(config)
+        self._client = getattr(self._provider, "client", None)
         self._registry = ToolRegistry()
         builtin_cfg = config.builtin_tools or BuiltinToolsConfig()
         register_builtin_tools(self._registry, builtin_cfg)
@@ -46,7 +42,8 @@ class Agent:
         if config.skills_dir:
             self._skill_manager = SkillManager(config.skills_dir)
             self._skill_manager.load()
-            self._skill_router = LLMSkillRouter(client=self._client, model=config.model)
+            if self._client is not None:
+                self._skill_router = LLMSkillRouter(client=self._client, model=config.model)
 
     def tool(self, name: str | None = None, description: str = ""):
         def decorator(func):
@@ -156,13 +153,11 @@ class Agent:
                 metadata={"tools_count": len(tools or [])},
             )
             llm_start = time.perf_counter()
-            response = await self._client.chat.completions.create(**kwargs)
+            response = await self._provider.complete(**kwargs)
             llm_duration_ms = round((time.perf_counter() - llm_start) * 1000, 3)
-            choice = response.choices[0]
-            assistant_msg = choice.message
-            history.append(_message_to_dict(assistant_msg))
+            history.append(_provider_message_to_dict(response))
 
-            usage = _usage_from_response(response)
+            usage = response.usage
             await self._emit(
                 "llm_end",
                 run_id=run_id,
@@ -172,8 +167,8 @@ class Agent:
                 usage=usage,
             )
 
-            if not assistant_msg.tool_calls:
-                content = assistant_msg.content or ""
+            if not response.tool_calls:
+                content = response.content or ""
                 await self._emit(
                     "done",
                     run_id=run_id,
@@ -182,21 +177,21 @@ class Agent:
                     content=content,
                     usage=usage,
                 )
-                result = Response(content=assistant_msg.content or "", usage=usage, history=history)
+                result = Response(content=response.content or "", usage=usage, history=history)
                 if conversation_id:
                     self._conversations[conversation_id] = history[-20:]
                 return result
 
             results = await asyncio.gather(*[
                 self._execute_tool_call_with_events(
-                    tc,
+                    _provider_tool_call_to_object(tc),
                     run_id=run_id,
                     conversation_id=conversation_id,
                     iteration=iteration,
                 )
-                for tc in assistant_msg.tool_calls
+                for tc in response.tool_calls
             ])
-            for tc, tool_result in zip(assistant_msg.tool_calls, results):
+            for tc, tool_result in zip(response.tool_calls, results):
                 history.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
@@ -220,10 +215,8 @@ class Agent:
         run_id: str,
         conversation_id: str | None,
     ) -> list[dict[str, Any]]:
-        if not self._skill_manager or not self._skill_manager.skills:
+        if not self._skill_manager or not self._skill_manager.skills or not self._skill_router:
             return history
-
-        assert self._skill_router is not None
         skills = self._skill_manager.skills
         await self._emit(
             "skill_route_start",
@@ -546,5 +539,45 @@ def _stream_tool_call_to_object(tc: dict[str, Any]) -> Any:
         function=SimpleNamespace(
             name=tc["name"],
             arguments=tc["arguments"],
+        ),
+    )
+
+
+def _build_provider(config: AgentConfig) -> Any:
+    provider = config.provider
+    if provider is None or provider == "openai":
+        return OpenAIProvider(
+            api_key=config.api_key,
+            base_url=config.base_url,
+            default_headers=config.default_headers,
+        )
+    if isinstance(provider, str):
+        raise ValueError(f"Unsupported provider: {provider}")
+    return provider
+
+
+def _provider_message_to_dict(response: Any) -> dict[str, Any]:
+    message: dict[str, Any] = {
+        "role": "assistant",
+        "content": response.content or None,
+    }
+    if response.tool_calls:
+        message["tool_calls"] = [
+            {
+                "id": tc.id,
+                "type": "function",
+                "function": {"name": tc.name, "arguments": tc.arguments},
+            }
+            for tc in response.tool_calls
+        ]
+    return message
+
+
+def _provider_tool_call_to_object(tc: LLMToolCall) -> Any:
+    return SimpleNamespace(
+        id=tc.id,
+        function=SimpleNamespace(
+            name=tc.name,
+            arguments=tc.arguments,
         ),
     )
