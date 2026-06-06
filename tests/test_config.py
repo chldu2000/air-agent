@@ -3,6 +3,19 @@ import pytest
 from air_agent.config import AgentConfig, MCPServerStdio, MCPServerSSE
 
 
+class TestProviderConfig:
+    def test_default_provider_is_none(self):
+        config = AgentConfig()
+
+        assert config.provider is None
+
+    def test_programmatic_provider_is_preserved_by_identity(self):
+        provider = object()
+        config = AgentConfig(provider=provider)
+
+        assert config.provider is provider
+
+
 class TestFromJson:
     def test_basic_fields(self, tmp_path):
         config_file = tmp_path / "config.json"
@@ -93,6 +106,15 @@ class TestFromJson:
         assert config.max_iterations == 20
         assert config.mcp_servers == []
 
+    def test_provider_string_is_accepted(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "provider": "openai",
+        }))
+        config = AgentConfig.from_json(str(config_file))
+
+        assert config.provider == "openai"
+
 
 class TestFromEnv:
     def test_string_fields(self, monkeypatch):
@@ -157,6 +179,12 @@ class TestFromEnv:
         config = AgentConfig.from_env()
 
         assert config.api_key == "sk-openai-fallback"
+
+    def test_provider_string_from_env(self, monkeypatch):
+        monkeypatch.setenv("AIR_PROVIDER", "openai")
+        config = AgentConfig.from_env()
+
+        assert config.provider == "openai"
 
 
 class TestSkillsDirConfig:

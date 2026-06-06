@@ -59,6 +59,7 @@ class AgentConfig:
     model: str = "gpt-4o"
     api_key: str | None = None
     base_url: str | None = None
+    provider: Any = None
     system_prompt: str | None = None
     max_iterations: int = 20
     tool_timeout: float = 30.0
@@ -100,6 +101,7 @@ class AgentConfig:
             f"{prefix}MODEL": ("model", str),
             f"{prefix}API_KEY": ("api_key", str),
             f"{prefix}BASE_URL": ("base_url", str),
+            f"{prefix}PROVIDER": ("provider", str),
             f"{prefix}SYSTEM_PROMPT": ("system_prompt", str),
             f"{prefix}MAX_ITERATIONS": ("max_iterations", int),
             f"{prefix}TOOL_TIMEOUT": ("tool_timeout", float),
