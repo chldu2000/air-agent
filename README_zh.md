@@ -197,9 +197,9 @@ class EchoProvider:
 
     async def complete(
         self,
-        messages: list[dict[str, Any]],
         *,
         model: str,
+        messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         **options: Any,
     ) -> LLMResponse:
@@ -208,9 +208,9 @@ class EchoProvider:
 
     async def stream(
         self,
-        messages: list[dict[str, Any]],
         *,
         model: str,
+        messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         **options: Any,
     ) -> AsyncIterator[LLMStreamChunk]:
