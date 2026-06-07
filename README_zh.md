@@ -188,7 +188,7 @@ agent = Agent(AgentConfig(
 ```python
 from typing import Any, AsyncIterator
 
-from air_agent import Agent, AgentConfig, LLMResponse, LLMStreamChunk
+from air_agent import Agent, AgentConfig, BuiltinToolsConfig, LLMResponse, LLMStreamChunk
 
 
 class EchoProvider:
@@ -218,10 +218,14 @@ class EchoProvider:
         yield LLMStreamChunk(content_delta=str(messages[-1]["content"]))
 
 
-agent = Agent(AgentConfig(model="echo", provider=EchoProvider()))
+agent = Agent(AgentConfig(
+    model="echo",
+    provider=EchoProvider(),
+    builtin_tools=BuiltinToolsConfig(enabled=False),
+))
 ```
 
-如果 `supports_tools = False`，一旦运行中有已注册或已启用的工具，就会明确失败，而不是静默忽略工具。由于本项目默认会启用内置工具，这一点即使你没有手动添加自定义工具也同样适用。
+如果 `supports_tools = False`，一旦运行中有已注册或已启用的工具，就会明确失败，而不是静默忽略工具。内置工具默认启用，因此可以像上面示例那样关闭内置工具，或在 Provider 中实现工具支持。
 
 ### Skills（技能系统）
 
