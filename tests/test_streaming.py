@@ -38,6 +38,10 @@ class FakeStreamingProvider:
             yield chunk
 
 
+class NoStreamingProvider(FakeStreamingProvider):
+    supports_streaming = False
+
+
 def _mock_stream_chunk(content=None, tool_calls=None, finish_reason=None, usage=None):
     delta = MagicMock()
     delta.content = content
@@ -126,6 +130,15 @@ async def test_streaming_uses_custom_provider_for_tool_call():
     assert len(provider.stream_calls) == 2
     assert provider.stream_calls[1]["messages"][-1]["role"] == "tool"
     assert provider.stream_calls[1]["messages"][-1]["tool_call_id"] == "tc_1"
+
+
+@pytest.mark.asyncio
+async def test_streaming_rejects_provider_without_streaming_support():
+    provider = NoStreamingProvider([])
+    agent = Agent(AgentConfig(model="fake-model", provider=provider))
+
+    with pytest.raises(RuntimeError, match="does not support streaming"):
+        await agent.run("Hi", stream=True)
 
 
 @pytest.mark.asyncio

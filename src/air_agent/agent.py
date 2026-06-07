@@ -127,6 +127,8 @@ class Agent:
     ) -> Response:
         run_id = run_id or f"run_{uuid4().hex}"
         tools = self._registry.get_openai_tools() or None
+        if tools and not getattr(self._provider, "supports_tools", False):
+            raise RuntimeError("Configured LLM provider does not support tool calling")
         history: list[dict[str, Any]] = list(messages)
 
         history = await self._route_and_inject_skills(
@@ -360,12 +362,11 @@ class Agent:
     async def _run_stream(
         self, messages: list[dict], conversation_id: str | None, run_id: str
     ) -> AsyncIterator[StreamEvent]:
-        if not getattr(self._provider, "supports_streaming", False):
-            raise RuntimeError(
-                "Streaming is not available for the configured provider because it "
-                "does not support streaming."
-            )
         tools = self._registry.get_openai_tools() or None
+        if not getattr(self._provider, "supports_streaming", False):
+            raise RuntimeError("Configured LLM provider does not support streaming")
+        if tools and not getattr(self._provider, "supports_tools", False):
+            raise RuntimeError("Configured LLM provider does not support tool calling")
         history: list[dict[str, Any]] = list(messages)
         history = await self._route_and_inject_skills(
             history,

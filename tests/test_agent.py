@@ -47,6 +47,10 @@ class FakeCompletionProvider:
         return self.responses.pop(0)
 
 
+class NoToolProvider(FakeCompletionProvider):
+    supports_tools = False
+
+
 @pytest.mark.asyncio
 async def test_basic_conversation():
     config = AgentConfig(model="gpt-4o", api_key="test-key")
@@ -136,6 +140,20 @@ async def test_run_uses_custom_provider_for_tool_call_loop():
         {"role": "tool", "tool_call_id": "tc_1", "content": "8"},
         {"role": "assistant", "content": "The result is 8."},
     ]
+
+
+@pytest.mark.asyncio
+async def test_agent_rejects_tools_when_provider_does_not_support_tools():
+    provider = NoToolProvider([LLMResponse(content="unused")])
+    agent = Agent(AgentConfig(model="fake-model", provider=provider))
+
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    agent.tool(name="add")(add)
+
+    with pytest.raises(RuntimeError, match="does not support tool calling"):
+        await agent.run("Use a tool")
 
 
 @pytest.mark.asyncio
