@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import logging
 from abc import ABC, abstractmethod
 from contextvars import ContextVar
@@ -7,6 +8,7 @@ from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any
 
+from air_agent.providers import LLMProvider, LLMResponse
 from air_agent.skills.skill import Skill
 
 logger = logging.getLogger(__name__)
@@ -65,11 +67,48 @@ class SkillRouter(ABC):
         )
 
 
+class _ClientBackedRoutingProvider:
+    supports_tools = True
+    supports_streaming = False
+
+    def __init__(self, client: Any) -> None:
+        self._client = client
+
+    async def complete(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        **options: Any,
+    ) -> LLMResponse:
+        response = await self._client.chat.completions.create(
+            model=model,
+            messages=messages,
+            max_tokens=options.get("max_tokens"),
+        )
+        raw_output = response.choices[0].message.content
+        return LLMResponse(content=raw_output or "")
+
+
 class LLMSkillRouter(SkillRouter):
     """Default implementation: use a lightweight LLM call to select relevant skills."""
 
-    def __init__(self, client: Any, model: str) -> None:
-        self._client = client
+    def __init__(
+        self,
+        provider: LLMProvider | None = None,
+        model: str = "",
+        *,
+        client: Any | None = None,
+    ) -> None:
+        if provider is None:
+            if client is None:
+                raise TypeError("LLMSkillRouter requires a provider")
+            provider = _ClientBackedRoutingProvider(client)
+        elif client is None and not _has_provider_complete(provider):
+            provider = _ClientBackedRoutingProvider(provider)
+
+        self._provider = provider
         self._model = model
 
     async def route(self, user_input: str, skills: list[Skill]) -> SkillRouteResult:
@@ -112,12 +151,13 @@ class LLMSkillRouter(SkillRouter):
 
         start = perf_counter()
         try:
-            response = await self._client.chat.completions.create(
+            response = await self._provider.complete(
                 model=self._model,
                 messages=messages,
+                tools=None,
                 max_tokens=100,
             )
-            raw_output = response.choices[0].message.content
+            raw_output = response.content
             raw_output = raw_output if raw_output is not None else ""
             parsed_output = raw_output.strip().lower()
             if not parsed_output or parsed_output == "none":
@@ -161,3 +201,7 @@ class LLMSkillRouter(SkillRouter):
         if _delegating_to_legacy_match.get():
             _legacy_match_route_result.set(result)
         return result.matched_skills
+
+
+def _has_provider_complete(provider: Any) -> bool:
+    return inspect.getattr_static(provider, "complete", None) is not None

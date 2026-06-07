@@ -1,6 +1,14 @@
 """Air Agent — lightweight AI agent library."""
 
 from air_agent.config import AgentConfig, MCPServerStdio, MCPServerSSE, SubagentConfig
+from air_agent.providers import (
+    LLMProvider,
+    LLMResponse,
+    LLMStreamChunk,
+    LLMStreamToolCallDelta,
+    LLMToolCall,
+    OpenAIProvider,
+)
 from air_agent.types import (
     Response,
     RunEvent,
@@ -33,4 +41,10 @@ __all__ = [
     "SkillRouter",
     "LLMSkillRouter",
     "BuiltinToolsConfig",
+    "LLMToolCall",
+    "LLMResponse",
+    "LLMStreamToolCallDelta",
+    "LLMStreamChunk",
+    "LLMProvider",
+    "OpenAIProvider",
 ]

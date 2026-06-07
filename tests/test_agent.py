@@ -3,7 +3,9 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from air_agent.agent import Agent
 from air_agent.config import AgentConfig
-from air_agent.types import Response
+from air_agent.providers import LLMResponse, LLMToolCall
+from air_agent.providers.openai import OpenAIProvider
+from air_agent.types import Response, TokenUsage
 
 
 def _mock_openai_response(content: str, tool_calls=None, usage=None):
@@ -26,6 +28,29 @@ def _mock_openai_response(content: str, tool_calls=None, usage=None):
     return resp
 
 
+class FakeCompletionProvider:
+    supports_tools = True
+    supports_streaming = False
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    async def complete(self, **kwargs):
+        self.calls.append(
+            {
+                **kwargs,
+                "messages": [dict(message) for message in kwargs["messages"]],
+                "tools": list(kwargs["tools"]) if kwargs.get("tools") else None,
+            }
+        )
+        return self.responses.pop(0)
+
+
+class NoToolProvider(FakeCompletionProvider):
+    supports_tools = False
+
+
 @pytest.mark.asyncio
 async def test_basic_conversation():
     config = AgentConfig(model="gpt-4o", api_key="test-key")
@@ -44,6 +69,94 @@ async def test_basic_conversation():
 
 
 @pytest.mark.asyncio
+async def test_run_uses_custom_provider_for_basic_completion():
+    provider = FakeCompletionProvider([
+        LLMResponse(
+            content="Hello from provider",
+            usage=TokenUsage(prompt_tokens=11, completion_tokens=7, total_tokens=18),
+        )
+    ])
+    agent = Agent(AgentConfig(model="gpt-4o", provider=provider))
+
+    assert agent._provider is provider
+    assert agent._client is None
+
+    result = await agent.run("Hi")
+
+    assert result.content == "Hello from provider"
+    assert result.usage == TokenUsage(prompt_tokens=11, completion_tokens=7, total_tokens=18)
+    assert result.history == [
+        {"role": "user", "content": "Hi"},
+        {"role": "assistant", "content": "Hello from provider"},
+    ]
+    assert len(provider.calls) == 1
+    assert provider.calls[0]["model"] == "gpt-4o"
+    assert provider.calls[0]["messages"] == [{"role": "user", "content": "Hi"}]
+
+
+@pytest.mark.asyncio
+async def test_run_uses_custom_provider_for_tool_call_loop():
+    provider = FakeCompletionProvider([
+        LLMResponse(
+            content="",
+            tool_calls=[LLMToolCall(id="tc_1", name="add", arguments='{"a": 3, "b": 5}')],
+            usage=TokenUsage(prompt_tokens=5, completion_tokens=4, total_tokens=9),
+        ),
+        LLMResponse(
+            content="The result is 8.",
+            usage=TokenUsage(prompt_tokens=8, completion_tokens=6, total_tokens=14),
+        ),
+    ])
+    agent = Agent(AgentConfig(model="gpt-4o", provider=provider))
+
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    agent.add_tools([add])
+
+    result = await agent.run("What is 3+5?")
+
+    assert result.content == "The result is 8."
+    assert result.usage == TokenUsage(prompt_tokens=8, completion_tokens=6, total_tokens=14)
+    assert len(provider.calls) == 2
+    assert provider.calls[0]["model"] == "gpt-4o"
+    assert provider.calls[0]["messages"] == [{"role": "user", "content": "What is 3+5?"}]
+    assert provider.calls[1]["messages"] == [
+        {"role": "user", "content": "What is 3+5?"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "tc_1",
+                    "type": "function",
+                    "function": {"name": "add", "arguments": '{"a": 3, "b": 5}'},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "tc_1", "content": "8"},
+    ]
+    assert result.history[-2:] == [
+        {"role": "tool", "tool_call_id": "tc_1", "content": "8"},
+        {"role": "assistant", "content": "The result is 8."},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_agent_rejects_tools_when_provider_does_not_support_tools():
+    provider = NoToolProvider([LLMResponse(content="unused")])
+    agent = Agent(AgentConfig(model="fake-model", provider=provider))
+
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    agent.tool(name="add")(add)
+
+    with pytest.raises(RuntimeError, match="does not support tool calling"):
+        await agent.run("Use a tool")
+
+
+@pytest.mark.asyncio
 async def test_system_prompt_in_messages():
     config = AgentConfig(model="gpt-4o", api_key="test-key", system_prompt="You are helpful")
     agent = Agent(config)
@@ -57,6 +170,51 @@ async def test_system_prompt_in_messages():
     messages = call_kwargs.kwargs["messages"] if call_kwargs.kwargs else call_kwargs[1]["messages"]
     assert messages[0]["role"] == "system"
     assert messages[0]["content"] == "You are helpful"
+
+
+def test_unsupported_provider_string_raises_value_error():
+    with pytest.raises(ValueError, match="Unsupported provider"):
+        Agent(AgentConfig(provider="anthropic"))
+
+
+def test_default_provider_none_builds_openai_provider_and_forwards_client_config():
+    sentinel_client = MagicMock(name="async_openai_client")
+
+    with patch("air_agent.providers.openai.AsyncOpenAI", return_value=sentinel_client) as mock_async_openai:
+        agent = Agent(
+            AgentConfig(
+                model="gpt-4o",
+                provider=None,
+                api_key="test-key",
+                base_url="https://api.example.com/v1",
+                default_headers={"X-Test": "value"},
+            )
+        )
+
+    assert isinstance(agent._provider, OpenAIProvider)
+    assert agent._provider.client is sentinel_client
+    assert agent._client is agent._provider.client
+    mock_async_openai.assert_called_once_with(
+        api_key="test-key",
+        base_url="https://api.example.com/v1",
+        default_headers={"X-Test": "value"},
+    )
+
+
+def test_default_provider_string_openai_builds_openai_provider():
+    sentinel_client = MagicMock(name="async_openai_client")
+
+    with patch("air_agent.providers.openai.AsyncOpenAI", return_value=sentinel_client) as mock_async_openai:
+        agent = Agent(AgentConfig(model="gpt-4o", provider="openai", api_key="test-key"))
+
+    assert isinstance(agent._provider, OpenAIProvider)
+    assert agent._provider.client is sentinel_client
+    assert agent._client is agent._provider.client
+    mock_async_openai.assert_called_once_with(
+        api_key="test-key",
+        base_url=None,
+        default_headers=None,
+    )
 
 
 @pytest.mark.asyncio

@@ -3,6 +3,28 @@ import pytest
 from air_agent.config import AgentConfig, MCPServerStdio, MCPServerSSE
 
 
+class TestProviderConfig:
+    def test_default_provider_is_none(self):
+        config = AgentConfig()
+
+        assert config.provider is None
+
+    def test_programmatic_provider_is_preserved_by_identity(self):
+        provider = object()
+        config = AgentConfig(provider=provider)
+
+        assert config.provider is provider
+
+    def test_positional_constructor_order_is_preserved(self):
+        config = AgentConfig("m", "k", "b", "sys")
+
+        assert config.model == "m"
+        assert config.api_key == "k"
+        assert config.base_url == "b"
+        assert config.system_prompt == "sys"
+        assert config.provider is None
+
+
 class TestFromJson:
     def test_basic_fields(self, tmp_path):
         config_file = tmp_path / "config.json"
@@ -93,6 +115,24 @@ class TestFromJson:
         assert config.max_iterations == 20
         assert config.mcp_servers == []
 
+    def test_provider_string_is_accepted(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "provider": "openai",
+        }))
+        config = AgentConfig.from_json(str(config_file))
+
+        assert config.provider == "openai"
+
+    def test_non_string_provider_value_is_rejected(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "provider": {"name": "openai"},
+        }))
+
+        with pytest.raises(ValueError, match="provider must be a string or null"):
+            AgentConfig.from_json(str(config_file))
+
 
 class TestFromEnv:
     def test_string_fields(self, monkeypatch):
@@ -157,6 +197,12 @@ class TestFromEnv:
         config = AgentConfig.from_env()
 
         assert config.api_key == "sk-openai-fallback"
+
+    def test_provider_string_from_env(self, monkeypatch):
+        monkeypatch.setenv("AIR_PROVIDER", "openai")
+        config = AgentConfig.from_env()
+
+        assert config.provider == "openai"
 
 
 class TestSkillsDirConfig:

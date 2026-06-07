@@ -161,6 +161,7 @@ Supported environment variables:
 | `AIR_MODEL` | str | Model name |
 | `AIR_API_KEY` | str | API key (takes precedence over `OPENAI_API_KEY`) |
 | `AIR_BASE_URL` | str | Custom API endpoint |
+| `AIR_PROVIDER` | str | Provider name (`openai` by default) |
 | `AIR_SYSTEM_PROMPT` | str | System prompt |
 | `AIR_MAX_ITERATIONS` | int | Max tool-calling rounds |
 | `AIR_TOOL_TIMEOUT` | float | Tool call timeout in seconds |
@@ -188,7 +189,7 @@ For other backends, pass an object that implements `LLMProvider`. Provider metho
 ```python
 from typing import Any, AsyncIterator
 
-from air_agent import Agent, AgentConfig, LLMResponse, LLMStreamChunk
+from air_agent import Agent, AgentConfig, BuiltinToolsConfig, LLMResponse, LLMStreamChunk
 
 
 class EchoProvider:
@@ -197,9 +198,9 @@ class EchoProvider:
 
     async def complete(
         self,
-        messages: list[dict[str, Any]],
         *,
         model: str,
+        messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         **options: Any,
     ) -> LLMResponse:
@@ -208,9 +209,9 @@ class EchoProvider:
 
     async def stream(
         self,
-        messages: list[dict[str, Any]],
         *,
         model: str,
+        messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         **options: Any,
     ) -> AsyncIterator[LLMStreamChunk]:
@@ -218,10 +219,14 @@ class EchoProvider:
         yield LLMStreamChunk(content_delta=str(messages[-1]["content"]))
 
 
-agent = Agent(AgentConfig(model="echo", provider=EchoProvider()))
+agent = Agent(AgentConfig(
+    model="echo",
+    provider=EchoProvider(),
+    builtin_tools=BuiltinToolsConfig(enabled=False),
+))
 ```
 
-If `supports_tools = False`, runs with registered or enabled tools fail clearly instead of silently ignoring them. Built-in tools are enabled by default in this project, so this applies even when you have not added custom tools yourself.
+If `supports_tools = False`, runs with registered or enabled tools fail clearly instead of silently ignoring them. Built-in tools are enabled by default, so disable them as shown above or implement tool support in your provider.
 
 ### Skills
 

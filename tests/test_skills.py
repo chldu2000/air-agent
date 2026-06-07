@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from air_agent import SkillRouteResult
+from air_agent.providers import LLMResponse
 from air_agent.skills.manager import SkillManager
 from air_agent.skills import SkillRouteResult as SkillsSkillRouteResult
 from air_agent.skills.router import LLMSkillRouter, SkillRouter
@@ -221,6 +222,26 @@ class TestLLMSkillRouter:
             skill_dir=fake_dir,
         )
 
+    class FakeRoutingProvider:
+        supports_tools = True
+        supports_streaming = True
+
+        def __init__(self, content: str | Exception):
+            self.content = content
+            self.complete_calls = []
+
+        async def complete(self, *, model, messages, tools=None, **options):
+            self.complete_calls.append(
+                {"model": model, "messages": messages, "tools": tools, "options": options}
+            )
+            if isinstance(self.content, Exception):
+                raise self.content
+            return LLMResponse(content=self.content)
+
+        async def stream(self, *, model, messages, tools=None, **options):
+            if False:
+                yield
+
     @pytest.mark.asyncio
     async def test_route_returns_raw_output_matches_unknowns_and_dedups(self):
         mock_client = MagicMock()
@@ -244,6 +265,22 @@ class TestLLMSkillRouter:
         assert result.error_message is None
         assert result.duration_ms is not None
         assert result.duration_ms >= 0
+
+    @pytest.mark.asyncio
+    async def test_route_preserves_legacy_positional_client_constructor(self):
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "debugging"
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+
+        router = LLMSkillRouter(mock_client, "gpt-4o")
+        skills = [self._make_skill("debugging", "Use when bugs")]
+
+        result = await router.route("fix it", skills)
+
+        assert [skill.name for skill in result.matched_skills] == ["debugging"]
+        mock_client.chat.completions.create.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_route_treats_none_and_empty_as_successful_no_match(self):
@@ -523,6 +560,23 @@ class TestLLMSkillRouter:
         assert names == ["brainstorming", "debugging"]
 
     @pytest.mark.asyncio
+    async def test_match_uses_provider_complete(self):
+        provider = self.FakeRoutingProvider("brainstorming, debugging")
+        router = LLMSkillRouter(provider=provider, model="router-model")
+        skills = [
+            self._make_skill("brainstorming", "Use when creating"),
+            self._make_skill("debugging", "Use when bugs"),
+            self._make_skill("deploy", "Use when deploying"),
+        ]
+
+        result = await router.match("I need to brainstorm ideas", skills)
+
+        assert [skill.name for skill in result] == ["brainstorming", "debugging"]
+        assert provider.complete_calls[0]["model"] == "router-model"
+        assert provider.complete_calls[0]["tools"] is None
+        assert provider.complete_calls[0]["options"]["max_tokens"] == 100
+
+    @pytest.mark.asyncio
     async def test_match_returns_empty_when_no_match(self):
         mock_client = MagicMock()
         mock_response = MagicMock()
@@ -546,6 +600,15 @@ class TestLLMSkillRouter:
 
         result = await router.match("test query", skills)
         assert len(result) == 0
+
+    @pytest.mark.asyncio
+    async def test_match_returns_empty_on_provider_error(self):
+        provider = self.FakeRoutingProvider(RuntimeError("boom"))
+        router = LLMSkillRouter(provider=provider, model="router-model")
+        skills = [self._make_skill("test", "Use when testing")]
+
+        result = await router.match("test query", skills)
+        assert result == []
 
 
 class TestSkillRouteResultAndRouting:

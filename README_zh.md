@@ -161,6 +161,7 @@ agent = Agent(config)
 | `AIR_MODEL` | str | 模型名称 |
 | `AIR_API_KEY` | str | API 密钥（优先级高于 `OPENAI_API_KEY`） |
 | `AIR_BASE_URL` | str | 自定义 API endpoint |
+| `AIR_PROVIDER` | str | Provider 名称（默认 `openai`） |
 | `AIR_SYSTEM_PROMPT` | str | 系统提示词 |
 | `AIR_MAX_ITERATIONS` | int | 最大工具调用轮次 |
 | `AIR_TOOL_TIMEOUT` | float | 工具调用超时（秒） |
@@ -188,7 +189,7 @@ agent = Agent(AgentConfig(
 ```python
 from typing import Any, AsyncIterator
 
-from air_agent import Agent, AgentConfig, LLMResponse, LLMStreamChunk
+from air_agent import Agent, AgentConfig, BuiltinToolsConfig, LLMResponse, LLMStreamChunk
 
 
 class EchoProvider:
@@ -197,9 +198,9 @@ class EchoProvider:
 
     async def complete(
         self,
-        messages: list[dict[str, Any]],
         *,
         model: str,
+        messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         **options: Any,
     ) -> LLMResponse:
@@ -208,9 +209,9 @@ class EchoProvider:
 
     async def stream(
         self,
-        messages: list[dict[str, Any]],
         *,
         model: str,
+        messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         **options: Any,
     ) -> AsyncIterator[LLMStreamChunk]:
@@ -218,10 +219,14 @@ class EchoProvider:
         yield LLMStreamChunk(content_delta=str(messages[-1]["content"]))
 
 
-agent = Agent(AgentConfig(model="echo", provider=EchoProvider()))
+agent = Agent(AgentConfig(
+    model="echo",
+    provider=EchoProvider(),
+    builtin_tools=BuiltinToolsConfig(enabled=False),
+))
 ```
 
-如果 `supports_tools = False`，一旦运行中有已注册或已启用的工具，就会明确失败，而不是静默忽略工具。由于本项目默认会启用内置工具，这一点即使你没有手动添加自定义工具也同样适用。
+如果 `supports_tools = False`，一旦运行中有已注册或已启用的工具，就会明确失败，而不是静默忽略工具。内置工具默认启用，因此可以像上面示例那样关闭内置工具，或在 Provider 中实现工具支持。
 
 ### Skills（技能系统）
 
