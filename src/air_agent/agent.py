@@ -361,10 +361,10 @@ class Agent:
     async def _run_stream(
         self, messages: list[dict], conversation_id: str | None, run_id: str
     ) -> AsyncIterator[StreamEvent]:
-        if self._client is None:
+        if not getattr(self._provider, "supports_streaming", False):
             raise RuntimeError(
-                "Streaming is not available for the configured provider yet because it "
-                "does not provide a streaming client."
+                "Streaming is not available for the configured provider because it "
+                "does not support streaming."
             )
         tools = self._registry.get_openai_tools() or None
         history: list[dict[str, Any]] = list(messages)
@@ -380,8 +380,6 @@ class Agent:
                 kwargs: dict[str, Any] = {
                     "model": self.config.model,
                     "messages": history,
-                    "stream": True,
-                    "stream_options": {"include_usage": True},
                 }
                 if tools:
                     kwargs["tools"] = tools
@@ -394,7 +392,7 @@ class Agent:
                     metadata={"tools_count": len(tools or []), "stream": True},
                 )
                 llm_start = time.perf_counter()
-                stream = await self._client.chat.completions.create(**kwargs)
+                stream = self._provider.stream(**kwargs)
 
                 text_content = ""
                 tool_calls_map: dict[int, dict[str, Any]] = {}
@@ -402,22 +400,14 @@ class Agent:
 
                 async for chunk in stream:
                     if chunk.usage:
-                        usage_data = TokenUsage(
-                            prompt_tokens=chunk.usage.prompt_tokens,
-                            completion_tokens=chunk.usage.completion_tokens,
-                            total_tokens=chunk.usage.total_tokens,
-                        )
+                        usage_data = chunk.usage
 
-                    delta = chunk.choices[0].delta if chunk.choices else None
-                    if delta is None:
-                        continue
+                    if chunk.content_delta:
+                        text_content += chunk.content_delta
+                        yield StreamEvent(type="text", content=chunk.content_delta)
 
-                    if delta.content:
-                        text_content += delta.content
-                        yield StreamEvent(type="text", content=delta.content)
-
-                    if delta.tool_calls:
-                        for tc_chunk in delta.tool_calls:
+                    if chunk.tool_call_deltas:
+                        for tc_chunk in chunk.tool_call_deltas:
                             idx = tc_chunk.index
                             if idx not in tool_calls_map:
                                 tool_calls_map[idx] = {
@@ -427,11 +417,10 @@ class Agent:
                                 }
                             if tc_chunk.id:
                                 tool_calls_map[idx]["id"] = tc_chunk.id
-                            if tc_chunk.function:
-                                if tc_chunk.function.name:
-                                    tool_calls_map[idx]["name"] = tc_chunk.function.name
-                                if tc_chunk.function.arguments:
-                                    tool_calls_map[idx]["arguments"] += tc_chunk.function.arguments
+                            if tc_chunk.name:
+                                tool_calls_map[idx]["name"] = tc_chunk.name
+                            if tc_chunk.arguments:
+                                tool_calls_map[idx]["arguments"] += tc_chunk.arguments
 
                 llm_duration_ms = round((time.perf_counter() - llm_start) * 1000, 3)
                 await self._emit(

@@ -1,15 +1,41 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+from typing import Any, AsyncIterator
 from air_agent.agent import Agent
 from air_agent.config import AgentConfig
+from air_agent.providers import LLMStreamChunk, LLMStreamToolCallDelta
+from air_agent.types import TokenUsage
 
 
-class FakeCompletionProvider:
+class FakeStreamingProvider:
     supports_tools = True
-    supports_streaming = False
+    supports_streaming = True
+
+    def __init__(self, batches: list[list[LLMStreamChunk]]) -> None:
+        self.batches = list(batches)
+        self.stream_calls: list[dict[str, Any]] = []
 
     async def complete(self, **kwargs):
-        raise AssertionError("complete() should not be called for streaming regression test")
+        raise AssertionError("complete should not be used for streaming")
+
+    async def stream(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        **options: Any,
+    ) -> AsyncIterator[LLMStreamChunk]:
+        self.stream_calls.append(
+            {
+                "model": model,
+                "messages": [dict(message) for message in messages],
+                "tools": [dict(tool) for tool in tools] if tools else tools,
+                "options": dict(options),
+            }
+        )
+        for chunk in self.batches.pop(0):
+            yield chunk
 
 
 def _mock_stream_chunk(content=None, tool_calls=None, finish_reason=None, usage=None):
@@ -42,11 +68,64 @@ def _mock_stream_response(chunks):
 
 
 @pytest.mark.asyncio
-async def test_streaming_with_custom_provider_without_client_raises_runtime_error():
-    agent = Agent(AgentConfig(model="gpt-4o", provider=FakeCompletionProvider()))
+async def test_streaming_uses_custom_provider_for_text():
+    provider = FakeStreamingProvider(
+        [[
+            LLMStreamChunk(content_delta="Hello"),
+            LLMStreamChunk(
+                content_delta=" world",
+                usage=TokenUsage(prompt_tokens=1, completion_tokens=2, total_tokens=3),
+            ),
+        ]]
+    )
+    agent = Agent(AgentConfig(model="fake-model", provider=provider))
 
-    with pytest.raises(RuntimeError, match="provider.*stream"):
-        await agent.run("Hi", stream=True)
+    stream_gen = await agent.run("Hi", stream=True)
+    events = []
+    async for event in stream_gen:
+        events.append(event)
+
+    assert [event.type for event in events] == ["text", "text", "done"]
+    assert events[2].usage is not None
+    assert events[2].usage.total_tokens == 3
+    assert provider.stream_calls[0]["model"] == "fake-model"
+
+
+@pytest.mark.asyncio
+async def test_streaming_uses_custom_provider_for_tool_call():
+    provider = FakeStreamingProvider(
+        [
+            [
+                LLMStreamChunk(
+                    tool_call_deltas=[
+                        LLMStreamToolCallDelta(index=0, id="tc_1", name="add", arguments='{"a": 2'),
+                    ]
+                ),
+                LLMStreamChunk(
+                    tool_call_deltas=[
+                        LLMStreamToolCallDelta(index=0, arguments=', "b": 4}'),
+                    ]
+                ),
+            ],
+            [LLMStreamChunk(content_delta="The result is 6.")],
+        ]
+    )
+    agent = Agent(AgentConfig(model="fake-model", provider=provider))
+
+    @agent.tool()
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    stream_gen = await agent.run("What is 2+4?", stream=True)
+    events = []
+    async for event in stream_gen:
+        events.append(event)
+
+    assert [event.type for event in events] == ["tool_call", "tool_result", "text", "done"]
+    assert events[1].content == "6"
+    assert len(provider.stream_calls) == 2
+    assert provider.stream_calls[1]["messages"][-1]["role"] == "tool"
+    assert provider.stream_calls[1]["messages"][-1]["tool_call_id"] == "tc_1"
 
 
 @pytest.mark.asyncio
