@@ -503,30 +503,6 @@ class Agent:
         return await _delegate(self, tasks, config)
 
 
-def _message_to_dict(msg: Any) -> dict[str, Any]:
-    d: dict[str, Any] = {"role": "assistant", "content": msg.content}
-    if msg.tool_calls:
-        d["tool_calls"] = [
-            {
-                "id": tc.id,
-                "type": "function",
-                "function": {"name": tc.function.name, "arguments": tc.function.arguments},
-            }
-            for tc in msg.tool_calls
-        ]
-    return d
-
-
-def _usage_from_response(response: Any) -> TokenUsage | None:
-    if not response.usage:
-        return None
-    return TokenUsage(
-        prompt_tokens=response.usage.prompt_tokens,
-        completion_tokens=response.usage.completion_tokens,
-        total_tokens=response.usage.total_tokens,
-    )
-
-
 def _stream_tool_call_to_object(tc: dict[str, Any]) -> Any:
     return SimpleNamespace(
         id=tc["id"],
