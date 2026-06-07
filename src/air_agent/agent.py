@@ -361,6 +361,11 @@ class Agent:
     async def _run_stream(
         self, messages: list[dict], conversation_id: str | None, run_id: str
     ) -> AsyncIterator[StreamEvent]:
+        if self._client is None:
+            raise RuntimeError(
+                "Streaming is not available for the configured provider yet because it "
+                "does not provide a streaming client."
+            )
         tools = self._registry.get_openai_tools() or None
         history: list[dict[str, Any]] = list(messages)
         history = await self._route_and_inject_skills(

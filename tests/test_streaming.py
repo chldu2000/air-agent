@@ -4,6 +4,14 @@ from air_agent.agent import Agent
 from air_agent.config import AgentConfig
 
 
+class FakeCompletionProvider:
+    supports_tools = True
+    supports_streaming = False
+
+    async def complete(self, **kwargs):
+        raise AssertionError("complete() should not be called for streaming regression test")
+
+
 def _mock_stream_chunk(content=None, tool_calls=None, finish_reason=None, usage=None):
     delta = MagicMock()
     delta.content = content
@@ -31,6 +39,14 @@ def _mock_stream_response(chunks):
 
     resp.__aiter__ = lambda self: _aiter()
     return resp
+
+
+@pytest.mark.asyncio
+async def test_streaming_with_custom_provider_without_client_raises_runtime_error():
+    agent = Agent(AgentConfig(model="gpt-4o", provider=FakeCompletionProvider()))
+
+    with pytest.raises(RuntimeError, match="provider.*stream"):
+        await agent.run("Hi", stream=True)
 
 
 @pytest.mark.asyncio
