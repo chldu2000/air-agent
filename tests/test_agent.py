@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from air_agent.agent import Agent
 from air_agent.config import AgentConfig
 from air_agent.providers import LLMResponse, LLMToolCall
+from air_agent.providers.openai import OpenAIProvider
 from air_agent.types import Response, TokenUsage
 
 
@@ -156,6 +157,46 @@ async def test_system_prompt_in_messages():
 def test_unsupported_provider_string_raises_value_error():
     with pytest.raises(ValueError, match="Unsupported provider"):
         Agent(AgentConfig(provider="anthropic"))
+
+
+def test_default_provider_none_builds_openai_provider_and_forwards_client_config():
+    sentinel_client = MagicMock(name="async_openai_client")
+
+    with patch("air_agent.providers.openai.AsyncOpenAI", return_value=sentinel_client) as mock_async_openai:
+        agent = Agent(
+            AgentConfig(
+                model="gpt-4o",
+                provider=None,
+                api_key="test-key",
+                base_url="https://api.example.com/v1",
+                default_headers={"X-Test": "value"},
+            )
+        )
+
+    assert isinstance(agent._provider, OpenAIProvider)
+    assert agent._provider.client is sentinel_client
+    assert agent._client is agent._provider.client
+    mock_async_openai.assert_called_once_with(
+        api_key="test-key",
+        base_url="https://api.example.com/v1",
+        default_headers={"X-Test": "value"},
+    )
+
+
+def test_default_provider_string_openai_builds_openai_provider():
+    sentinel_client = MagicMock(name="async_openai_client")
+
+    with patch("air_agent.providers.openai.AsyncOpenAI", return_value=sentinel_client) as mock_async_openai:
+        agent = Agent(AgentConfig(model="gpt-4o", provider="openai", api_key="test-key"))
+
+    assert isinstance(agent._provider, OpenAIProvider)
+    assert agent._provider.client is sentinel_client
+    assert agent._client is agent._provider.client
+    mock_async_openai.assert_called_once_with(
+        api_key="test-key",
+        base_url=None,
+        default_headers=None,
+    )
 
 
 @pytest.mark.asyncio
