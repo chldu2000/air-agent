@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-轻量级 Python AI Agent 库。基于 OpenAI Chat Completions API，支持工具调用循环、MCP Server 连接、并行 Subagent 和流式输出。设计为可被其他 Python 项目直接引用。
+轻量级 Python AI Agent 库。默认使用 OpenAI Provider，同时支持自定义 LLM Provider；内置工具调用循环、文件/Shell 工具、MCP Server 连接、Skills、并行 Subagent、Tracing 和流式输出。设计为可被其他 Python 项目直接引用。
 
 ## 安装
 
@@ -20,52 +20,104 @@ uv sync --group dev
 
 ## 快速开始
 
-### 基础对话
+### 1. 设置 API Key
+
+默认 OpenAI Provider 可以读取 `OPENAI_API_KEY`，也可以在 `AgentConfig` 中传入 `api_key`。
+
+```bash
+export OPENAI_API_KEY=sk-...
+```
+
+### 2. 运行基础对话
 
 ```python
 import asyncio
 from air_agent import Agent, AgentConfig
+
 
 async def main():
     agent = Agent(AgentConfig(model="gpt-4o"))
     response = await agent.run("用一句话解释量子计算")
     print(response.content)
 
+
 asyncio.run(main())
 ```
 
-### 注册本地工具
+### 3. 注册本地工具
+
+内置工具会自动注册；你也可以把本地 Python 函数注册为工具。
 
 ```python
-agent = Agent(AgentConfig(model="gpt-4o", api_key="sk-xxx"))
+import asyncio
+from air_agent import Agent, AgentConfig
 
-@agent.tool(name="add", description="计算两个数的和")
-async def add(a: int, b: int) -> int:
-    return a + b
 
-response = await agent.run("3 加 5 等于多少？")
-# Agent 会自动调用 add 工具并返回结果
+async def main():
+    agent = Agent(AgentConfig(model="gpt-4o"))
+
+    @agent.tool(name="add", description="计算两个数的和")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    response = await agent.run("3 加 5 等于多少？")
+    print(response.content)
+
+
+asyncio.run(main())
 ```
 
 参数类型从函数签名自动推导，生成 OpenAI tool calling 所需的 JSON Schema。
 
-### 流式输出
+### 4. 流式输出
 
 ```python
-async for event in await agent.run("写一首关于编程的诗", stream=True):
-    if event.type == "text":
-        print(event.content, end="", flush=True)
-    elif event.type == "tool_call":
-        print(f"\n[调用工具: {event.name}]")
-    elif event.type == "tool_result":
-        print(f"[工具结果: {event.content}]")
-    elif event.type == "done":
-        print(f"\n完成，token 用量: {event.usage}")
+import asyncio
+from air_agent import Agent, AgentConfig
+
+
+async def main():
+    agent = Agent(AgentConfig(model="gpt-4o"))
+
+    async for event in await agent.run("写一首关于编程的短诗", stream=True):
+        if event.type == "text":
+            print(event.content, end="", flush=True)
+        elif event.type == "tool_call":
+            print(f"\n[调用工具: {event.name}]")
+        elif event.type == "tool_result":
+            print(f"\n[工具结果: {event.content}]")
+        elif event.type == "done":
+            print(f"\n完成，token 用量: {event.usage}")
+
+
+asyncio.run(main())
 ```
 
-### Tracing 与结构化事件
+### 5. 保留多轮对话上下文
 
-Tracing 默认关闭。启用后，Agent 会为 LLM 调用、工具调用、重试、错误和完成状态输出结构化 `RunEvent` 记录。
+多轮对话传入相同的 `conversation_id` 即可。air-agent 会为该 id 保留最近的对话历史。
+
+```python
+import asyncio
+from air_agent import Agent, AgentConfig
+
+
+async def main():
+    agent = Agent(AgentConfig(model="gpt-4o"))
+
+    first = await agent.run("我的项目名是 air-agent。", conversation_id="session-1")
+    second = await agent.run("我的项目叫什么？", conversation_id="session-1")
+
+    print(first.content)
+    print(second.content)
+
+
+asyncio.run(main())
+```
+
+### 6. 使用 Tracing 观察运行过程
+
+Tracing 默认关闭。启用后，Agent 会为 LLM 调用、工具调用、重试、Skill 路由、错误和完成状态输出结构化 `RunEvent` 记录。
 
 ```python
 from air_agent import Agent, AgentConfig
@@ -111,14 +163,6 @@ Skills tracing 还会输出：
 
 `skill_route_end.content` 保存的是模型生成的完整 Router 输出，因此 tracing 日志可能包含敏感的提示词或路由数据；请相应配置日志、存储、访问权限和保留策略。
 
-### 多轮对话
-
-```python
-response = await agent.run("你好", conversation_id="session-1")
-response = await agent.run("我刚才说了什么？", conversation_id="session-1")
-# 第二轮会带上第一轮的上下文
-```
-
 ### 从 JSON 文件加载配置
 
 ```json
@@ -137,7 +181,7 @@ config = AgentConfig.from_json("agent-config.json")
 agent = Agent(config)
 ```
 
-JSON 中 `mcp_servers` 根据 `command`（stdio）或 `url`（SSE）自动识别类型。
+JSON 中 `mcp_servers` 根据 `command`（stdio）或 `url`（StreamableHTTP）自动识别类型。
 
 ### 从环境变量加载配置
 
@@ -161,13 +205,17 @@ agent = Agent(config)
 | `AIR_MODEL` | str | 模型名称 |
 | `AIR_API_KEY` | str | API 密钥（优先级高于 `OPENAI_API_KEY`） |
 | `AIR_BASE_URL` | str | 自定义 API endpoint |
-| `AIR_PROVIDER` | str | Provider 名称（默认 `openai`） |
+| `AIR_PROVIDER` | str | Provider 名称（支持 `openai`；不设置也使用 OpenAI） |
 | `AIR_SYSTEM_PROMPT` | str | 系统提示词 |
 | `AIR_MAX_ITERATIONS` | int | 最大工具调用轮次 |
 | `AIR_TOOL_TIMEOUT` | float | 工具调用超时（秒） |
 | `AIR_MCP_SERVERS` | JSON | MCP server 列表 |
 | `AIR_DEFAULT_HEADERS` | JSON | 自定义请求头 |
 | `AIR_SKILLS_DIR` | str | Skills 文件目录路径 |
+| `AIR_BUILTIN_TOOLS` | JSON | 内置工具配置 |
+| `AIR_ENABLE_TRACING` | bool | 启用结构化事件分发 |
+| `AIR_LOG_EVENTS` | bool | 以 JSON 形式记录结构化事件 |
+| `AIR_MAX_TOOL_RETRIES` | int | 可重试工具错误的重试次数 |
 
 ### 自定义 LLM Provider
 
@@ -371,7 +419,7 @@ async with agent:  # 自动连接/断开 MCP server
     response = await agent.run("列出 /tmp 下的文件")
 ```
 
-支持 stdio 和 StreamableHTTP 两种 MCP transport。连接 MCP 后，server 暴露的工具会自动注册到 Agent 的工具列表中。
+支持 stdio 和 StreamableHTTP 两种 MCP transport。`MCPServerSSE` 是 URL 型 MCP server 的兼容命名。连接 MCP 后，server 暴露的工具会自动注册到 Agent 的工具列表中。
 
 ### 并行 Subagent
 
@@ -391,7 +439,7 @@ for r in results:
     print(f"[{r.status}] {r.content[:100]}")
 ```
 
-每个 task 在独立的 Agent 实例中运行，互不干扰。
+每个 task 会以独立 prompt 通过同一个 Agent 并发执行，并由 `SubagentConfig.max_parallel` 限制并发数。
 
 ## 配置
 
@@ -400,12 +448,17 @@ AgentConfig(
     model="gpt-4o",              # 模型名称
     api_key="sk-xxx",            # 或设置 OPENAI_API_KEY 环境变量
     base_url=None,               # 自定义 API endpoint
+    provider=None,                # None/"openai" 或 LLMProvider 对象
+    default_headers=None,         # 自定义 provider 请求头
     system_prompt="你是一个助手",  # 系统提示词
     max_iterations=20,           # 工具调用最大轮次
     tool_timeout=30.0,           # 单次工具调用超时（秒）
     mcp_servers=[],              # MCP server 列表
     skills_dir=None,             # Skills 文件目录路径
     builtin_tools=None,          # BuiltinToolsConfig 或 None 使用默认值
+    enable_tracing=False,         # 输出结构化 RunEvent 记录
+    log_events=False,             # 以 JSON 形式记录 RunEvent
+    max_tool_retries=0,           # 可重试工具错误的重试次数
 )
 ```
 
@@ -416,6 +469,10 @@ src/air_agent/
 ├── __init__.py          # 公开 API 导出
 ├── agent.py             # 核心 Agent（ReAct 循环 + 流式输出）
 ├── config.py            # 配置数据类
+├── providers/
+│   ├── types.py         # LLMProvider 协议 + 中立响应类型
+│   └── openai.py        # 默认 OpenAI provider adapter
+├── tracing.py           # RunEvent 分发与结构化事件日志
 ├── types.py             # Response, StreamEvent, SubagentResult
 ├── tools/
 │   ├── base.py          # Tool 数据类

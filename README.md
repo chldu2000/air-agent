@@ -2,7 +2,7 @@
 
 [中文文档](README_zh.md)
 
-A lightweight Python AI Agent library. Built on the OpenAI Chat Completions API with support for tool-calling loops, MCP Server connections, parallel subagents, and streaming output. Designed to be imported directly by other Python projects.
+A lightweight Python AI Agent library with OpenAI as the default provider, plus custom LLM provider support. It includes tool-calling loops, built-in file/shell tools, MCP server connections, skills, parallel subagents, tracing, and streaming output. Designed to be imported directly by other Python projects.
 
 ## Installation
 
@@ -20,52 +20,104 @@ uv sync --group dev
 
 ## Quick Start
 
-### Basic Conversation
+### 1. Set an API Key
+
+For the default OpenAI provider, either set `OPENAI_API_KEY` or pass `api_key` in `AgentConfig`.
+
+```bash
+export OPENAI_API_KEY=sk-...
+```
+
+### 2. Run a Basic Conversation
 
 ```python
 import asyncio
 from air_agent import Agent, AgentConfig
+
 
 async def main():
     agent = Agent(AgentConfig(model="gpt-4o"))
     response = await agent.run("Explain quantum computing in one sentence")
     print(response.content)
 
+
 asyncio.run(main())
 ```
 
-### Register Local Tools
+### 3. Register a Local Tool
+
+Built-in tools are registered automatically. You can also add local Python functions as tools.
 
 ```python
-agent = Agent(AgentConfig(model="gpt-4o", api_key="sk-xxx"))
+import asyncio
+from air_agent import Agent, AgentConfig
 
-@agent.tool(name="add", description="Calculate the sum of two numbers")
-async def add(a: int, b: int) -> int:
-    return a + b
 
-response = await agent.run("What is 3 plus 5?")
-# The agent will automatically call the add tool and return the result
+async def main():
+    agent = Agent(AgentConfig(model="gpt-4o"))
+
+    @agent.tool(name="add", description="Calculate the sum of two numbers")
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    response = await agent.run("What is 3 plus 5?")
+    print(response.content)
+
+
+asyncio.run(main())
 ```
 
 Parameter types are inferred from the function signature and converted to the JSON Schema required by OpenAI tool calling.
 
-### Streaming Output
+### 4. Stream Output
 
 ```python
-async for event in await agent.run("Write a poem about programming", stream=True):
-    if event.type == "text":
-        print(event.content, end="", flush=True)
-    elif event.type == "tool_call":
-        print(f"\n[Calling tool: {event.name}]")
-    elif event.type == "tool_result":
-        print(f"[Tool result: {event.content}]")
-    elif event.type == "done":
-        print(f"\nDone, token usage: {event.usage}")
+import asyncio
+from air_agent import Agent, AgentConfig
+
+
+async def main():
+    agent = Agent(AgentConfig(model="gpt-4o"))
+
+    async for event in await agent.run("Write a short poem about programming", stream=True):
+        if event.type == "text":
+            print(event.content, end="", flush=True)
+        elif event.type == "tool_call":
+            print(f"\n[Calling tool: {event.name}]")
+        elif event.type == "tool_result":
+            print(f"\n[Tool result: {event.content}]")
+        elif event.type == "done":
+            print(f"\nDone, token usage: {event.usage}")
+
+
+asyncio.run(main())
 ```
 
-### Tracing and Structured Events
+### 5. Keep Conversation Context
 
-Tracing is opt-in. When enabled, the agent emits structured `RunEvent` records for LLM calls, tool calls, retries, errors, and completion.
+Pass the same `conversation_id` across turns. air-agent keeps the recent conversation history for that id.
+
+```python
+import asyncio
+from air_agent import Agent, AgentConfig
+
+
+async def main():
+    agent = Agent(AgentConfig(model="gpt-4o"))
+
+    first = await agent.run("My project is named air-agent.", conversation_id="session-1")
+    second = await agent.run("What is my project named?", conversation_id="session-1")
+
+    print(first.content)
+    print(second.content)
+
+
+asyncio.run(main())
+```
+
+### 6. Observe Runs with Tracing
+
+Tracing is opt-in. When enabled, the agent emits structured `RunEvent` records for LLM calls, tool calls, retries, skill routing, errors, and completion.
 
 ```python
 from air_agent import Agent, AgentConfig
@@ -111,14 +163,6 @@ Skills tracing adds:
 
 `skill_route_end.content` contains the complete model-generated router output. Tracing logs may therefore include sensitive prompt or routing data; enable logging, storage, access, and retention controls accordingly.
 
-### Multi-turn Conversation
-
-```python
-response = await agent.run("Hello", conversation_id="session-1")
-response = await agent.run("What did I just say?", conversation_id="session-1")
-# The second turn includes context from the first turn
-```
-
 ### Load Configuration from JSON
 
 ```json
@@ -137,7 +181,7 @@ config = AgentConfig.from_json("agent-config.json")
 agent = Agent(config)
 ```
 
-The `mcp_servers` field auto-detects the transport type based on `command` (stdio) or `url` (SSE).
+The `mcp_servers` field auto-detects the transport type based on `command` (stdio) or `url` (StreamableHTTP).
 
 ### Load Configuration from Environment Variables
 
@@ -161,13 +205,17 @@ Supported environment variables:
 | `AIR_MODEL` | str | Model name |
 | `AIR_API_KEY` | str | API key (takes precedence over `OPENAI_API_KEY`) |
 | `AIR_BASE_URL` | str | Custom API endpoint |
-| `AIR_PROVIDER` | str | Provider name (`openai` by default) |
+| `AIR_PROVIDER` | str | Provider name (`openai`; unset also uses OpenAI) |
 | `AIR_SYSTEM_PROMPT` | str | System prompt |
 | `AIR_MAX_ITERATIONS` | int | Max tool-calling rounds |
 | `AIR_TOOL_TIMEOUT` | float | Tool call timeout in seconds |
 | `AIR_MCP_SERVERS` | JSON | MCP server list |
 | `AIR_DEFAULT_HEADERS` | JSON | Custom request headers |
 | `AIR_SKILLS_DIR` | str | Skills directory path |
+| `AIR_BUILTIN_TOOLS` | JSON | Built-in tools config |
+| `AIR_ENABLE_TRACING` | bool | Enable structured event dispatch |
+| `AIR_LOG_EVENTS` | bool | Log structured events as JSON |
+| `AIR_MAX_TOOL_RETRIES` | int | Retries for retryable tool errors |
 
 ### Custom LLM Providers
 
@@ -370,7 +418,7 @@ async with agent:  # auto connect/disconnect MCP servers
     response = await agent.run("List files under /tmp")
 ```
 
-Supports both stdio and StreamableHTTP MCP transports. Once connected, tools exposed by the server are automatically registered in the agent's tool list.
+Supports both stdio and StreamableHTTP MCP transports. `MCPServerSSE` is the compatibility name for URL-based MCP servers. Once connected, tools exposed by the server are automatically registered in the agent's tool list.
 
 ### Parallel Subagents
 
@@ -390,7 +438,7 @@ for r in results:
     print(f"[{r.status}] {r.content[:100]}")
 ```
 
-Each task runs in an independent Agent instance without interference.
+Each task runs as an isolated prompt through the same agent, with concurrency limited by `SubagentConfig.max_parallel`.
 
 ## Configuration
 
@@ -399,12 +447,17 @@ AgentConfig(
     model="gpt-4o",              # Model name
     api_key="sk-xxx",            # Or set OPENAI_API_KEY env variable
     base_url=None,               # Custom API endpoint
+    provider=None,                # None/"openai" or an LLMProvider object
+    default_headers=None,         # Custom provider request headers
     system_prompt="You are an assistant",  # System prompt
     max_iterations=20,           # Max tool-calling rounds
     tool_timeout=30.0,           # Single tool call timeout (seconds)
     mcp_servers=[],              # MCP server list
     skills_dir=None,             # Skills directory path
     builtin_tools=None,          # BuiltinToolsConfig or None for defaults
+    enable_tracing=False,         # Emit structured RunEvent records
+    log_events=False,             # Log RunEvent records as JSON
+    max_tool_retries=0,           # Retries for retryable tool errors
 )
 ```
 
@@ -415,6 +468,10 @@ src/air_agent/
 ├── __init__.py          # Public API exports
 ├── agent.py             # Core Agent (ReAct loop + streaming)
 ├── config.py            # Configuration dataclass
+├── providers/
+│   ├── types.py         # LLMProvider protocol + neutral response types
+│   └── openai.py        # Default OpenAI provider adapter
+├── tracing.py           # RunEvent dispatcher and structured event logging
 ├── types.py             # Response, StreamEvent, SubagentResult
 ├── tools/
 │   ├── base.py          # Tool dataclass
