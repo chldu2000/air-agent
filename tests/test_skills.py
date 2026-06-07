@@ -267,6 +267,22 @@ class TestLLMSkillRouter:
         assert result.duration_ms >= 0
 
     @pytest.mark.asyncio
+    async def test_route_preserves_legacy_positional_client_constructor(self):
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "debugging"
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+
+        router = LLMSkillRouter(mock_client, "gpt-4o")
+        skills = [self._make_skill("debugging", "Use when bugs")]
+
+        result = await router.route("fix it", skills)
+
+        assert [skill.name for skill in result.matched_skills] == ["debugging"]
+        mock_client.chat.completions.create.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_route_treats_none_and_empty_as_successful_no_match(self):
         mock_client = MagicMock()
         mock_response = MagicMock()

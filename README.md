@@ -161,6 +161,7 @@ Supported environment variables:
 | `AIR_MODEL` | str | Model name |
 | `AIR_API_KEY` | str | API key (takes precedence over `OPENAI_API_KEY`) |
 | `AIR_BASE_URL` | str | Custom API endpoint |
+| `AIR_PROVIDER` | str | Provider name (`openai` by default) |
 | `AIR_SYSTEM_PROMPT` | str | System prompt |
 | `AIR_MAX_ITERATIONS` | int | Max tool-calling rounds |
 | `AIR_TOOL_TIMEOUT` | float | Tool call timeout in seconds |

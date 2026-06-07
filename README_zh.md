@@ -161,6 +161,7 @@ agent = Agent(config)
 | `AIR_MODEL` | str | 模型名称 |
 | `AIR_API_KEY` | str | API 密钥（优先级高于 `OPENAI_API_KEY`） |
 | `AIR_BASE_URL` | str | 自定义 API endpoint |
+| `AIR_PROVIDER` | str | Provider 名称（默认 `openai`） |
 | `AIR_SYSTEM_PROMPT` | str | 系统提示词 |
 | `AIR_MAX_ITERATIONS` | int | 最大工具调用轮次 |
 | `AIR_TOOL_TIMEOUT` | float | 工具调用超时（秒） |

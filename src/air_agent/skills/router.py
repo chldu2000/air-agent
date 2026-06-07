@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import logging
 from abc import ABC, abstractmethod
 from contextvars import ContextVar
@@ -104,6 +105,8 @@ class LLMSkillRouter(SkillRouter):
             if client is None:
                 raise TypeError("LLMSkillRouter requires a provider")
             provider = _ClientBackedRoutingProvider(client)
+        elif client is None and not _has_provider_complete(provider):
+            provider = _ClientBackedRoutingProvider(provider)
 
         self._provider = provider
         self._model = model
@@ -198,3 +201,7 @@ class LLMSkillRouter(SkillRouter):
         if _delegating_to_legacy_match.get():
             _legacy_match_route_result.set(result)
         return result.matched_skills
+
+
+def _has_provider_complete(provider: Any) -> bool:
+    return inspect.getattr_static(provider, "complete", None) is not None

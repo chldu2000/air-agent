@@ -42,6 +42,31 @@ class NoStreamingProvider(FakeStreamingProvider):
     supports_streaming = False
 
 
+class AwaitableStreamingProvider(FakeStreamingProvider):
+    async def stream(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        **options: Any,
+    ) -> AsyncIterator[LLMStreamChunk]:
+        self.stream_calls.append(
+            {
+                "model": model,
+                "messages": [dict(message) for message in messages],
+                "tools": [dict(tool) for tool in tools] if tools else tools,
+                "options": dict(options),
+            }
+        )
+
+        async def _chunks() -> AsyncIterator[LLMStreamChunk]:
+            for chunk in self.batches.pop(0):
+                yield chunk
+
+        return _chunks()
+
+
 def _mock_stream_chunk(content=None, tool_calls=None, finish_reason=None, usage=None):
     delta = MagicMock()
     delta.content = content
@@ -139,6 +164,18 @@ async def test_streaming_rejects_provider_without_streaming_support():
 
     with pytest.raises(RuntimeError, match="does not support streaming"):
         await agent.run("Hi", stream=True)
+
+
+@pytest.mark.asyncio
+async def test_streaming_accepts_awaitable_provider_stream_result():
+    provider = AwaitableStreamingProvider([[LLMStreamChunk(content_delta="Hello")]])
+    agent = Agent(AgentConfig(model="fake-model", provider=provider))
+
+    stream_gen = await agent.run("Hi", stream=True)
+    events = [event async for event in stream_gen]
+
+    assert [event.type for event in events] == ["text", "done"]
+    assert events[0].content == "Hello"
 
 
 @pytest.mark.asyncio

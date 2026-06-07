@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import time
 from types import SimpleNamespace
@@ -392,7 +393,8 @@ class Agent:
                     metadata={"tools_count": len(tools or []), "stream": True},
                 )
                 llm_start = time.perf_counter()
-                stream = self._provider.stream(**kwargs)
+                stream_result = self._provider.stream(**kwargs)
+                stream = await stream_result if inspect.isawaitable(stream_result) else stream_result
 
                 text_content = ""
                 tool_calls_map: dict[int, dict[str, Any]] = {}
