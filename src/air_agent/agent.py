@@ -42,8 +42,7 @@ class Agent:
         if config.skills_dir:
             self._skill_manager = SkillManager(config.skills_dir)
             self._skill_manager.load()
-            if self._client is not None:
-                self._skill_router = LLMSkillRouter(client=self._client, model=config.model)
+            self._skill_router = LLMSkillRouter(provider=self._provider, model=config.model)
 
     def tool(self, name: str | None = None, description: str = ""):
         def decorator(func):
