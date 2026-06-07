@@ -168,6 +168,61 @@ agent = Agent(config)
 | `AIR_DEFAULT_HEADERS` | JSON | 自定义请求头 |
 | `AIR_SKILLS_DIR` | str | Skills 文件目录路径 |
 
+### 自定义 LLM Provider
+
+OpenAI 仍然是默认 Provider。对于 OpenAI-compatible API，继续使用 `model`、`api_key`、`base_url` 和 `default_headers`：
+
+```python
+from air_agent import Agent, AgentConfig
+
+agent = Agent(AgentConfig(
+    model="gpt-4o",
+    api_key="sk-xxx",
+    base_url="https://api.example.com/v1",
+    default_headers={"X-API-Key": "custom-header"},
+))
+```
+
+对于其他后端，可以传入实现了 `LLMProvider` 的对象。Provider 会返回中性的 `LLMResponse` 和 `LLMStreamChunk` 类型，因此可以把任何后端适配进来，而不依赖 OpenAI 专属 payload。
+
+```python
+from typing import Any, AsyncIterator
+
+from air_agent import Agent, AgentConfig, LLMResponse, LLMStreamChunk
+
+
+class EchoProvider:
+    supports_tools = False
+    supports_streaming = True
+
+    async def complete(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        model: str,
+        tools: list[dict[str, Any]] | None = None,
+        **options: Any,
+    ) -> LLMResponse:
+        last_message = messages[-1]["content"]
+        return LLMResponse(content=f"echo: {last_message}")
+
+    async def stream(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        model: str,
+        tools: list[dict[str, Any]] | None = None,
+        **options: Any,
+    ) -> AsyncIterator[LLMStreamChunk]:
+        yield LLMStreamChunk(content_delta="echo: ")
+        yield LLMStreamChunk(content_delta=str(messages[-1]["content"]))
+
+
+agent = Agent(AgentConfig(model="echo", provider=EchoProvider()))
+```
+
+如果 `supports_tools = False`，一旦运行中有已注册或已启用的工具，就会明确失败，而不是静默忽略工具。由于本项目默认会启用内置工具，这一点即使你没有手动添加自定义工具也同样适用。
+
 ### Skills（技能系统）
 
 从技能文件夹目录加载技能指令。每个 Skill 是一个目录（kebab-case 命名），包含 `SKILL.md` 文件，使用 YAML frontmatter 定义元数据，Markdown 正文定义指令内容。

@@ -168,6 +168,61 @@ Supported environment variables:
 | `AIR_DEFAULT_HEADERS` | JSON | Custom request headers |
 | `AIR_SKILLS_DIR` | str | Skills directory path |
 
+### Custom LLM Providers
+
+OpenAI remains the default provider. For OpenAI-compatible APIs, keep using `model`, `api_key`, `base_url`, and `default_headers`:
+
+```python
+from air_agent import Agent, AgentConfig
+
+agent = Agent(AgentConfig(
+    model="gpt-4o",
+    api_key="sk-xxx",
+    base_url="https://api.example.com/v1",
+    default_headers={"X-API-Key": "custom-header"},
+))
+```
+
+For other backends, pass an object that implements `LLMProvider`. Provider methods return the neutral `LLMResponse` and `LLMStreamChunk` types, so you can adapt any backend without OpenAI-specific payloads.
+
+```python
+from typing import Any, AsyncIterator
+
+from air_agent import Agent, AgentConfig, LLMResponse, LLMStreamChunk
+
+
+class EchoProvider:
+    supports_tools = False
+    supports_streaming = True
+
+    async def complete(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        model: str,
+        tools: list[dict[str, Any]] | None = None,
+        **options: Any,
+    ) -> LLMResponse:
+        last_message = messages[-1]["content"]
+        return LLMResponse(content=f"echo: {last_message}")
+
+    async def stream(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        model: str,
+        tools: list[dict[str, Any]] | None = None,
+        **options: Any,
+    ) -> AsyncIterator[LLMStreamChunk]:
+        yield LLMStreamChunk(content_delta="echo: ")
+        yield LLMStreamChunk(content_delta=str(messages[-1]["content"]))
+
+
+agent = Agent(AgentConfig(model="echo", provider=EchoProvider()))
+```
+
+If `supports_tools = False`, runs with registered or enabled tools fail clearly instead of silently ignoring them. Built-in tools are enabled by default in this project, so this applies even when you have not added custom tools yourself.
+
 ### Skills
 
 Load skill instructions from a directory of skill folders. Each skill is a directory (kebab-case named) containing a `SKILL.md` file with YAML frontmatter for metadata and Markdown body for instructions.
