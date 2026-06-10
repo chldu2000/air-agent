@@ -25,6 +25,62 @@ class TestProviderConfig:
         assert config.provider is None
 
 
+class TestMemoryConfig:
+    def test_memory_defaults_are_disabled(self):
+        config = AgentConfig()
+
+        assert config.memory is None
+        assert config.memory_enabled is False
+        assert config.memory_search_limit == 5
+        assert config.memory_max_chars == 4000
+        assert config.memory_summary_threshold == 12
+
+    def test_programmatic_memory_is_preserved_by_identity(self):
+        memory = object()
+        config = AgentConfig(memory=memory, memory_enabled=True)
+
+        assert config.memory is memory
+        assert config.memory_enabled is True
+
+    def test_memory_scalar_options_from_json(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "memory_enabled": True,
+            "memory_search_limit": 7,
+            "memory_max_chars": 2000,
+            "memory_summary_threshold": 9,
+        }))
+
+        config = AgentConfig.from_json(str(config_file))
+
+        assert config.memory_enabled is True
+        assert config.memory_search_limit == 7
+        assert config.memory_max_chars == 2000
+        assert config.memory_summary_threshold == 9
+
+    def test_memory_object_from_json_is_rejected(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "memory": {"type": "file"},
+        }))
+
+        with pytest.raises(ValueError, match="memory must be configured programmatically"):
+            AgentConfig.from_json(str(config_file))
+
+    def test_memory_env_vars(self, monkeypatch):
+        monkeypatch.setenv("AIR_MEMORY_ENABLED", "true")
+        monkeypatch.setenv("AIR_MEMORY_SEARCH_LIMIT", "8")
+        monkeypatch.setenv("AIR_MEMORY_MAX_CHARS", "2500")
+        monkeypatch.setenv("AIR_MEMORY_SUMMARY_THRESHOLD", "10")
+
+        config = AgentConfig.from_env()
+
+        assert config.memory_enabled is True
+        assert config.memory_search_limit == 8
+        assert config.memory_max_chars == 2500
+        assert config.memory_summary_threshold == 10
+
+
 class TestFromJson:
     def test_basic_fields(self, tmp_path):
         config_file = tmp_path / "config.json"

@@ -5,6 +5,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from air_agent.memory import MemoryStore
 from air_agent.tools.builtin.config import BuiltinToolsConfig
 
 
@@ -71,6 +72,11 @@ class AgentConfig:
     event_handlers: list[Callable[[Any], Any]] | None = None
     max_tool_retries: int = 0
     provider: Any = None
+    memory: MemoryStore | None = None
+    memory_enabled: bool = False
+    memory_search_limit: int = 5
+    memory_max_chars: int = 4000
+    memory_summary_threshold: int = 12
 
     def __post_init__(self):
         if self.api_key is None:
@@ -86,8 +92,12 @@ class AgentConfig:
         provider_raw = data.get("provider")
         if "provider" in data and provider_raw is not None and not isinstance(provider_raw, str):
             raise ValueError("provider must be a string or null")
+        if data.get("memory") is not None:
+            raise ValueError("memory must be configured programmatically")
         field_names = {
-            f.name for f in cls.__dataclass_fields__.values() if f.name != "event_handlers"
+            f.name
+            for f in cls.__dataclass_fields__.values()
+            if f.name not in {"event_handlers", "memory"}
         }
         kwargs = {k: v for k, v in data.items() if k in field_names}
 
@@ -112,6 +122,10 @@ class AgentConfig:
             f"{prefix}ENABLE_TRACING": ("enable_tracing", _parse_bool),
             f"{prefix}LOG_EVENTS": ("log_events", _parse_bool),
             f"{prefix}MAX_TOOL_RETRIES": ("max_tool_retries", int),
+            f"{prefix}MEMORY_ENABLED": ("memory_enabled", _parse_bool),
+            f"{prefix}MEMORY_SEARCH_LIMIT": ("memory_search_limit", int),
+            f"{prefix}MEMORY_MAX_CHARS": ("memory_max_chars", int),
+            f"{prefix}MEMORY_SUMMARY_THRESHOLD": ("memory_summary_threshold", int),
         }
 
         for env_key, (field_name, type_) in env_map.items():
