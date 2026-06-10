@@ -15,11 +15,11 @@ def _utc_now() -> datetime:
 def _parse_datetime(value: datetime | str | None) -> datetime:
     if value is None:
         return _utc_now()
-    if isinstance(value, datetime):
-        if value.tzinfo is None:
-            return value.replace(tzinfo=UTC)
-        return value
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if isinstance(value, str):
+        value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value
 
 
 @dataclass

@@ -43,6 +43,19 @@ class TestMemoryRecord:
         assert record.created_at == datetime(2026, 6, 10, 12, 34, 56, tzinfo=UTC)
         assert record.updated_at == datetime(2026, 6, 10, 12, 35, 56, tzinfo=UTC)
 
+    def test_from_dict_normalizes_offsetless_datetime_strings_to_utc(self):
+        record = MemoryRecord.from_dict({
+            "id": "mem_3",
+            "scope": "conversation:abc",
+            "kind": "summary",
+            "content": "Parsed from offsetless timestamps.",
+            "created_at": "2026-06-10T12:34:56",
+            "updated_at": "2026-06-10T12:35:56",
+        })
+
+        assert record.created_at == datetime(2026, 6, 10, 12, 34, 56, tzinfo=UTC)
+        assert record.updated_at == datetime(2026, 6, 10, 12, 35, 56, tzinfo=UTC)
+
 
 class TestInMemoryMemoryStore:
     def test_store_satisfies_protocol_and_replaces_records_by_id(self):
@@ -140,6 +153,26 @@ class TestInMemoryMemoryStore:
 
         assert store.summarize("abc") == "Latest summary"
         assert store.summarize("missing") is None
+
+    def test_summarize_handles_offsetless_iso_timestamps_with_aware_records(self):
+        store = InMemoryMemoryStore([
+            MemoryRecord.from_dict({
+                "id": "offsetless",
+                "scope": "conversation:abc",
+                "kind": "summary",
+                "content": "Latest summary from offsetless timestamp.",
+                "updated_at": "2026-06-10T12:00:00",
+            }),
+            MemoryRecord(
+                id="aware",
+                scope="conversation:abc",
+                kind="summary",
+                content="Older aware summary.",
+                updated_at=datetime(2026, 6, 10, 11, 0, tzinfo=UTC),
+            ),
+        ])
+
+        assert store.summarize("abc") == "Latest summary from offsetless timestamp."
 
     def test_clear_by_scope_and_all(self):
         store = InMemoryMemoryStore([
