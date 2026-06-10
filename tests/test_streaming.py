@@ -153,6 +153,51 @@ async def test_streaming_run_injects_memory_before_provider_call():
 
 
 @pytest.mark.asyncio
+async def test_streaming_memory_context_is_not_persisted_in_conversation_history():
+    provider = FakeStreamingProvider([
+        [LLMStreamChunk(content_delta="First")],
+        [LLMStreamChunk(content_delta="Second")],
+    ])
+    memory = InMemoryMemoryStore([
+        MemoryRecord(
+            id="fact_1",
+            scope="global",
+            kind="fact",
+            content="User likes terse answers.",
+        )
+    ])
+    agent = Agent(
+        AgentConfig(
+            model="fake-model",
+            provider=provider,
+            memory=memory,
+            memory_enabled=True,
+        )
+    )
+
+    first_stream = await agent.run("terse", conversation_id="abc", stream=True)
+    first_events = [event async for event in first_stream]
+    second_stream = await agent.run("terse again", conversation_id="abc", stream=True)
+    second_events = [event async for event in second_stream]
+
+    assert [event.type for event in first_events] == ["text", "done"]
+    assert [event.type for event in second_events] == ["text", "done"]
+    second_messages = provider.stream_calls[1]["messages"]
+    memory_messages = [
+        message
+        for message in second_messages
+        if message["role"] == "system"
+        and message["content"].startswith("## Retrieved Memory")
+    ]
+    assert len(memory_messages) == 1
+    assert not any(
+        message["role"] == "system"
+        and message["content"].startswith("## Retrieved Memory")
+        for message in agent._conversations["abc"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_streaming_uses_custom_provider_for_tool_call():
     provider = FakeStreamingProvider(
         [

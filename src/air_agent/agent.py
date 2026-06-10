@@ -209,7 +209,7 @@ class Agent:
                 )
                 result = Response(content=response.content or "", usage=usage, history=history)
                 if conversation_id:
-                    self._conversations[conversation_id] = history[-20:]
+                    self._conversations[conversation_id] = _without_transient_memory_messages(history)[-20:]
                 return result
 
             results = await asyncio.gather(*[
@@ -475,7 +475,7 @@ class Agent:
                     )
                     yield StreamEvent(type="done", usage=usage_data)
                     if conversation_id:
-                        self._conversations[conversation_id] = history[-20:]
+                        self._conversations[conversation_id] = _without_transient_memory_messages(history)[-20:]
                     return
 
                 tool_calls_list = [tool_calls_map[i] for i in sorted(tool_calls_map)]
@@ -540,6 +540,19 @@ def _stream_tool_call_to_object(tc: dict[str, Any]) -> Any:
             name=tc["name"],
             arguments=tc["arguments"],
         ),
+    )
+
+
+def _without_transient_memory_messages(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [message for message in history if not _is_memory_context_message(message)]
+
+
+def _is_memory_context_message(message: dict[str, Any]) -> bool:
+    content = message.get("content")
+    return (
+        message.get("role") == "system"
+        and isinstance(content, str)
+        and content.startswith("## Retrieved Memory")
     )
 
 

@@ -269,6 +269,47 @@ async def test_memory_injection_preserves_existing_system_prompt_first():
 
 
 @pytest.mark.asyncio
+async def test_memory_context_is_not_persisted_in_conversation_history():
+    provider = FakeCompletionProvider([
+        LLMResponse(content="First"),
+        LLMResponse(content="Second"),
+    ])
+    memory = InMemoryMemoryStore([
+        MemoryRecord(
+            id="fact_1",
+            scope="global",
+            kind="fact",
+            content="User likes terse answers.",
+        )
+    ])
+    agent = Agent(
+        AgentConfig(
+            model="fake-model",
+            provider=provider,
+            memory=memory,
+            memory_enabled=True,
+        )
+    )
+
+    await agent.run("terse", conversation_id="abc")
+    await agent.run("terse again", conversation_id="abc")
+
+    second_messages = provider.calls[1]["messages"]
+    memory_messages = [
+        message
+        for message in second_messages
+        if message["role"] == "system"
+        and message["content"].startswith("## Retrieved Memory")
+    ]
+    assert len(memory_messages) == 1
+    assert not any(
+        message["role"] == "system"
+        and message["content"].startswith("## Retrieved Memory")
+        for message in agent._conversations["abc"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_agent_rejects_tools_when_provider_does_not_support_tools():
     provider = NoToolProvider([LLMResponse(content="unused")])
     agent = Agent(AgentConfig(model="fake-model", provider=provider))
