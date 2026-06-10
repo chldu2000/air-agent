@@ -9,6 +9,7 @@ from typing import Any, AsyncIterator
 from uuid import uuid4
 
 from air_agent.config import AgentConfig, SubagentConfig
+from air_agent.memory import filter_memory_records_for_scope, format_memory_context
 from air_agent.mcp.client import MCPClient
 from air_agent.providers import LLMToolCall, OpenAIProvider
 from air_agent.tools.builtin import register_builtin_tools
@@ -102,10 +103,37 @@ class Agent:
                 if summary:
                     system_content += f"\n\n## Available Skills\n{summary}"
             messages.append({"role": "system", "content": system_content})
+        memory_context = self._build_memory_context(user_input, conversation_id)
+        if memory_context:
+            messages.append({"role": "system", "content": memory_context})
         if conversation_id and conversation_id in self._conversations:
             messages.extend(self._conversations[conversation_id])
         messages.append({"role": "user", "content": user_input})
         return messages
+
+    def _build_memory_context(self, user_input: str, conversation_id: str | None) -> str:
+        if not self.config.memory_enabled or self.config.memory is None:
+            return ""
+
+        try:
+            records = self.config.memory.search(
+                user_input,
+                limit=self.config.memory_search_limit,
+            )
+            records = filter_memory_records_for_scope(records, conversation_id)
+            summary = (
+                self.config.memory.summarize(conversation_id)
+                if conversation_id is not None
+                else None
+            )
+            return format_memory_context(
+                records=records,
+                summary=summary,
+                max_chars=self.config.memory_max_chars,
+            )
+        except Exception:
+            logger.warning("Failed to build memory context", exc_info=True)
+            return ""
 
     async def run(
         self,

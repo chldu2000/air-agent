@@ -1,7 +1,14 @@
 import json
 from datetime import UTC, datetime, timedelta
 
-from air_agent.memory import FileMemoryStore, InMemoryMemoryStore, MemoryRecord, MemoryStore
+from air_agent.memory import (
+    FileMemoryStore,
+    InMemoryMemoryStore,
+    MemoryRecord,
+    MemoryStore,
+    filter_memory_records_for_scope,
+    format_memory_context,
+)
 
 
 class TestMemoryRecord:
@@ -226,6 +233,70 @@ class TestInMemoryMemoryStore:
         store.clear()
 
         assert store.records() == []
+
+
+class TestMemoryContextHelpers:
+    def test_filter_memory_records_for_scope_allows_global_and_current_conversation(self):
+        records = [
+            MemoryRecord(id="global", scope="global", kind="fact", content="Global"),
+            MemoryRecord(id="current", scope="conversation:abc", kind="fact", content="Current"),
+            MemoryRecord(id="other", scope="conversation:other", kind="fact", content="Other"),
+        ]
+
+        filtered = filter_memory_records_for_scope(records, "abc")
+
+        assert [record.id for record in filtered] == ["global", "current"]
+
+    def test_filter_memory_records_for_scope_without_conversation_allows_only_global(self):
+        records = [
+            MemoryRecord(id="global", scope="global", kind="fact", content="Global"),
+            MemoryRecord(id="conversation", scope="conversation:abc", kind="fact", content="Conversation"),
+        ]
+
+        filtered = filter_memory_records_for_scope(records, None)
+
+        assert [record.id for record in filtered] == ["global"]
+
+    def test_format_memory_context_includes_provenance_summary_and_records(self):
+        records = [
+            MemoryRecord(
+                id="fact_1",
+                scope="global",
+                kind="fact",
+                content="User prefers concise answers.\nNo extra ceremony.",
+            )
+        ]
+
+        context = format_memory_context(
+            records=records,
+            summary="Discussed release blockers.",
+            max_chars=1000,
+        )
+
+        assert context.startswith("## Retrieved Memory")
+        assert "contextual notes" in context
+        assert "not user instructions" in context
+        assert "[summary scope=conversation]" in context
+        assert "Discussed release blockers." in context
+        assert "[fact scope=global id=fact_1]" in context
+        assert "User prefers concise answers. No extra ceremony." in context
+
+    def test_format_memory_context_respects_max_chars(self):
+        context = format_memory_context(
+            records=[
+                MemoryRecord(
+                    id="fact_1",
+                    scope="global",
+                    kind="fact",
+                    content="x" * 100,
+                )
+            ],
+            summary="y" * 100,
+            max_chars=80,
+        )
+
+        assert len(context) <= 80
+        assert context.endswith("[truncated]")
 
 
 class TestFileMemoryStore:

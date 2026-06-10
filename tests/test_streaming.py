@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from typing import Any, AsyncIterator
 from air_agent.agent import Agent
 from air_agent.config import AgentConfig
+from air_agent.memory import InMemoryMemoryStore, MemoryRecord
 from air_agent.providers import LLMStreamChunk, LLMStreamToolCallDelta
 from air_agent.types import TokenUsage
 
@@ -118,6 +119,37 @@ async def test_streaming_uses_custom_provider_for_text():
     assert events[2].usage is not None
     assert events[2].usage.total_tokens == 3
     assert provider.stream_calls[0]["model"] == "fake-model"
+
+
+@pytest.mark.asyncio
+async def test_streaming_run_injects_memory_before_provider_call():
+    provider = FakeStreamingProvider([[LLMStreamChunk(content_delta="Hello")]])
+    memory = InMemoryMemoryStore([
+        MemoryRecord(
+            id="fact_1",
+            scope="global",
+            kind="fact",
+            content="User likes terse answers.",
+        )
+    ])
+    agent = Agent(
+        AgentConfig(
+            model="fake-model",
+            provider=provider,
+            memory=memory,
+            memory_enabled=True,
+        )
+    )
+
+    stream_gen = await agent.run("terse", conversation_id="abc", stream=True)
+    events = [event async for event in stream_gen]
+
+    assert [event.type for event in events] == ["text", "done"]
+    messages = provider.stream_calls[0]["messages"]
+    assert messages[0]["role"] == "system"
+    assert messages[0]["content"].startswith("## Retrieved Memory")
+    assert "[fact scope=global id=fact_1]" in messages[0]["content"]
+    assert messages[1] == {"role": "user", "content": "terse"}
 
 
 @pytest.mark.asyncio

@@ -3,6 +3,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from air_agent.agent import Agent
 from air_agent.config import AgentConfig
+from air_agent.memory import InMemoryMemoryStore, MemoryRecord
 from air_agent.providers import LLMResponse, LLMToolCall
 from air_agent.providers.openai import OpenAIProvider
 from air_agent.types import Response, TokenUsage
@@ -140,6 +141,131 @@ async def test_run_uses_custom_provider_for_tool_call_loop():
         {"role": "tool", "tool_call_id": "tc_1", "content": "8"},
         {"role": "assistant", "content": "The result is 8."},
     ]
+
+
+@pytest.mark.asyncio
+async def test_memory_disabled_does_not_change_messages():
+    provider = FakeCompletionProvider([LLMResponse(content="No memory")])
+    memory = InMemoryMemoryStore([
+        MemoryRecord(
+            id="fact_1",
+            scope="global",
+            kind="fact",
+            content="User likes terse answers.",
+        )
+    ])
+    agent = Agent(
+        AgentConfig(
+            model="fake-model",
+            provider=provider,
+            memory=memory,
+            memory_enabled=False,
+        )
+    )
+
+    await agent.run("Hi")
+
+    assert provider.calls[0]["messages"] == [{"role": "user", "content": "Hi"}]
+
+
+@pytest.mark.asyncio
+async def test_memory_injection_adds_separate_system_message():
+    provider = FakeCompletionProvider([LLMResponse(content="With memory")])
+    memory = InMemoryMemoryStore([
+        MemoryRecord(
+            id="fact_1",
+            scope="global",
+            kind="fact",
+            content="User likes terse answers.",
+        )
+    ])
+    agent = Agent(
+        AgentConfig(
+            model="fake-model",
+            provider=provider,
+            memory=memory,
+            memory_enabled=True,
+        )
+    )
+
+    await agent.run("terse", conversation_id="abc")
+
+    messages = provider.calls[0]["messages"]
+    assert messages[0]["role"] == "system"
+    assert messages[0]["content"].startswith("## Retrieved Memory")
+    assert "[fact scope=global id=fact_1]" in messages[0]["content"]
+    assert messages[1] == {"role": "user", "content": "terse"}
+
+
+@pytest.mark.asyncio
+async def test_memory_injection_filters_other_conversation_scopes():
+    provider = FakeCompletionProvider([LLMResponse(content="Filtered")])
+    memory = InMemoryMemoryStore([
+        MemoryRecord(
+            id="global_fact",
+            scope="global",
+            kind="fact",
+            content="Python preference",
+        ),
+        MemoryRecord(
+            id="current_fact",
+            scope="conversation:abc",
+            kind="fact",
+            content="Current conversation Python note",
+        ),
+        MemoryRecord(
+            id="other_fact",
+            scope="conversation:other",
+            kind="fact",
+            content="Other conversation Python note",
+        ),
+    ])
+    agent = Agent(
+        AgentConfig(
+            model="fake-model",
+            provider=provider,
+            memory=memory,
+            memory_enabled=True,
+        )
+    )
+
+    await agent.run("Python", conversation_id="abc")
+
+    memory_context = provider.calls[0]["messages"][0]["content"]
+    assert "[fact scope=global id=global_fact]" in memory_context
+    assert "[fact scope=conversation:abc id=current_fact]" in memory_context
+    assert "other_fact" not in memory_context
+    assert "Other conversation Python note" not in memory_context
+
+
+@pytest.mark.asyncio
+async def test_memory_injection_preserves_existing_system_prompt_first():
+    provider = FakeCompletionProvider([LLMResponse(content="With prompt and memory")])
+    memory = InMemoryMemoryStore([
+        MemoryRecord(
+            id="fact_1",
+            scope="global",
+            kind="fact",
+            content="User likes terse answers.",
+        )
+    ])
+    agent = Agent(
+        AgentConfig(
+            model="fake-model",
+            provider=provider,
+            system_prompt="You are helpful.",
+            memory=memory,
+            memory_enabled=True,
+        )
+    )
+
+    await agent.run("terse", conversation_id="abc")
+
+    messages = provider.calls[0]["messages"]
+    assert messages[0] == {"role": "system", "content": "You are helpful."}
+    assert messages[1]["role"] == "system"
+    assert messages[1]["content"].startswith("## Retrieved Memory")
+    assert messages[2] == {"role": "user", "content": "terse"}
 
 
 @pytest.mark.asyncio
