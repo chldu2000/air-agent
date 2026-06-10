@@ -56,6 +56,19 @@ class TestMemoryRecord:
         assert record.created_at == datetime(2026, 6, 10, 12, 34, 56, tzinfo=UTC)
         assert record.updated_at == datetime(2026, 6, 10, 12, 35, 56, tzinfo=UTC)
 
+    def test_constructor_normalizes_naive_datetime_values_to_utc(self):
+        record = MemoryRecord(
+            id="mem_4",
+            scope="conversation:abc",
+            kind="fact",
+            content="Constructed from naive timestamps.",
+            created_at=datetime(2026, 6, 10, 12, 34, 56),
+            updated_at=datetime(2026, 6, 10, 12, 35, 56),
+        )
+
+        assert record.created_at == datetime(2026, 6, 10, 12, 34, 56, tzinfo=UTC)
+        assert record.updated_at == datetime(2026, 6, 10, 12, 35, 56, tzinfo=UTC)
+
 
 class TestInMemoryMemoryStore:
     def test_store_satisfies_protocol_and_replaces_records_by_id(self):
@@ -173,6 +186,26 @@ class TestInMemoryMemoryStore:
         ])
 
         assert store.summarize("abc") == "Latest summary from offsetless timestamp."
+
+    def test_search_handles_constructed_naive_timestamps_with_aware_records(self):
+        store = InMemoryMemoryStore([
+            MemoryRecord(
+                id="naive",
+                scope="conversation:abc",
+                kind="fact",
+                content="Python",
+                updated_at=datetime(2026, 6, 10, 12, 0),
+            ),
+            MemoryRecord(
+                id="aware",
+                scope="conversation:abc",
+                kind="fact",
+                content="Python",
+                updated_at=datetime(2026, 6, 10, 11, 0, tzinfo=UTC),
+            ),
+        ])
+
+        assert [record.id for record in store.search("python")] == ["naive", "aware"]
 
     def test_clear_by_scope_and_all(self):
         store = InMemoryMemoryStore([

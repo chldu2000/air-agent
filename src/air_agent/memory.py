@@ -32,6 +32,10 @@ class MemoryRecord:
     created_at: datetime = field(default_factory=_utc_now)
     updated_at: datetime = field(default_factory=_utc_now)
 
+    def __post_init__(self):
+        self.created_at = _parse_datetime(self.created_at)
+        self.updated_at = _parse_datetime(self.updated_at)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
