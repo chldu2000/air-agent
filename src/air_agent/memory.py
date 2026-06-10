@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import json
+import os
+import tempfile
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Literal, Protocol, runtime_checkable
 
 
@@ -159,7 +163,75 @@ def _metadata_text(metadata: dict[str, Any]) -> str:
     return " ".join(f"{key} {value}" for key, value in metadata.items())
 
 
+class FileMemoryStore(InMemoryMemoryStore):
+    def __init__(self, path: str | Path):
+        self.path = Path(path)
+        self._records: dict[str, MemoryRecord] = {}
+        for record in self._load_records():
+            InMemoryMemoryStore.add(self, record)
+
+    def add(self, record: MemoryRecord) -> MemoryRecord:
+        record = super().add(record)
+        self._persist()
+        return record
+
+    def clear(self, *, scope: str | None = None) -> None:
+        super().clear(scope=scope)
+        self._persist()
+
+    def _load_records(self) -> list[MemoryRecord]:
+        try:
+            data = json.loads(self.path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return []
+
+        if not isinstance(data, list):
+            return []
+
+        records: list[MemoryRecord] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            try:
+                records.append(MemoryRecord.from_dict(item))
+            except (KeyError, TypeError, ValueError):
+                continue
+        return records
+
+    def _persist(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(
+            [record.to_dict() for record in self.records()],
+            indent=2,
+            sort_keys=True,
+        ) + "\n"
+
+        temp_path: str | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=self.path.parent,
+                prefix=f".{self.path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as temp_file:
+                temp_path = temp_file.name
+                temp_file.write(payload)
+                temp_file.flush()
+                os.fsync(temp_file.fileno())
+            os.replace(temp_path, self.path)
+            temp_path = None
+        finally:
+            if temp_path is not None:
+                try:
+                    os.unlink(temp_path)
+                except FileNotFoundError:
+                    pass
+
+
 __all__ = [
+    "FileMemoryStore",
     "InMemoryMemoryStore",
     "MemoryKind",
     "MemoryRecord",

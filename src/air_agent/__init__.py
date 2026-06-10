@@ -1,7 +1,7 @@
 """Air Agent — lightweight AI agent library."""
 
 from air_agent.config import AgentConfig, MCPServerStdio, MCPServerSSE, SubagentConfig
-from air_agent.memory import InMemoryMemoryStore, MemoryRecord, MemoryStore
+from air_agent.memory import FileMemoryStore, InMemoryMemoryStore, MemoryRecord, MemoryStore
 from air_agent.providers import (
     LLMProvider,
     LLMResponse,
@@ -42,6 +42,7 @@ __all__ = [
     "SkillRouter",
     "LLMSkillRouter",
     "BuiltinToolsConfig",
+    "FileMemoryStore",
     "InMemoryMemoryStore",
     "MemoryRecord",
     "MemoryStore",

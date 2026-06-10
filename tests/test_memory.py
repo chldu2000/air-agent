@@ -1,6 +1,7 @@
+import json
 from datetime import UTC, datetime, timedelta
 
-from air_agent.memory import InMemoryMemoryStore, MemoryRecord, MemoryStore
+from air_agent.memory import FileMemoryStore, InMemoryMemoryStore, MemoryRecord, MemoryStore
 
 
 class TestMemoryRecord:
@@ -225,3 +226,102 @@ class TestInMemoryMemoryStore:
         store.clear()
 
         assert store.records() == []
+
+
+class TestFileMemoryStore:
+    def test_persists_records_to_json_file_and_reloads_fresh_instance(self, tmp_path):
+        path = tmp_path / "memory.json"
+        now = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
+        record = MemoryRecord(
+            id="mem_1",
+            scope="conversation:abc",
+            kind="fact",
+            content="The user prefers concise answers.",
+            metadata={"source": "test"},
+            created_at=now,
+            updated_at=now,
+        )
+
+        store = FileMemoryStore(path)
+        store.add(record)
+
+        assert path.read_text() == json.dumps(
+            [record.to_dict()],
+            indent=2,
+            sort_keys=True,
+        ) + "\n"
+
+        fresh_store = FileMemoryStore(path)
+
+        assert fresh_store.records() == [record]
+
+    def test_creates_parent_directories_when_writing(self, tmp_path):
+        path = tmp_path / "nested" / "memory" / "records.json"
+        store = FileMemoryStore(path)
+
+        store.add(MemoryRecord(
+            id="mem_1",
+            scope="global",
+            kind="fact",
+            content="A persisted fact.",
+        ))
+
+        assert path.exists()
+        assert path.parent.is_dir()
+
+    def test_clear_by_scope_and_all_persist_to_disk(self, tmp_path):
+        path = tmp_path / "memory.json"
+        store = FileMemoryStore(path)
+        global_record = MemoryRecord(
+            id="global",
+            scope="global",
+            kind="fact",
+            content="A fact.",
+        )
+        conversation_record = MemoryRecord(
+            id="conversation",
+            scope="conversation:abc",
+            kind="task_state",
+            content="Task state.",
+        )
+        store.add(global_record)
+        store.add(conversation_record)
+
+        store.clear(scope="global")
+
+        scoped_fresh_store = FileMemoryStore(path)
+        assert scoped_fresh_store.records() == [conversation_record]
+
+        store.clear()
+
+        all_fresh_store = FileMemoryStore(path)
+        assert all_fresh_store.records() == []
+        assert json.loads(path.read_text()) == []
+
+    def test_loads_non_list_json_as_empty(self, tmp_path):
+        path = tmp_path / "memory.json"
+        path.write_text(json.dumps({"records": []}))
+
+        store = FileMemoryStore(path)
+
+        assert store.records() == []
+
+    def test_skips_malformed_item_dicts_while_loading_valid_records(self, tmp_path):
+        path = tmp_path / "memory.json"
+        valid_record = MemoryRecord(
+            id="valid",
+            scope="global",
+            kind="fact",
+            content="This valid memory should survive.",
+            created_at=datetime(2026, 6, 10, 12, 0, tzinfo=UTC),
+            updated_at=datetime(2026, 6, 10, 12, 1, tzinfo=UTC),
+        )
+        path.write_text(json.dumps([
+            valid_record.to_dict(),
+            {"id": "missing_required_fields"},
+            "not a dict",
+        ]))
+
+        store = FileMemoryStore(path)
+
+        assert store.records() == [valid_record]
