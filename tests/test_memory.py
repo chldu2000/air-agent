@@ -146,6 +146,40 @@ class TestInMemoryMemoryStore:
             "older_one_hit",
         ]
 
+    def test_search_filters_scopes_before_applying_limit(self):
+        now = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
+        store = InMemoryMemoryStore([
+            MemoryRecord(
+                id="other_high_rank",
+                scope="conversation:other",
+                kind="fact",
+                content="Python Python Python unrelated conversation",
+                updated_at=now,
+            ),
+            MemoryRecord(
+                id="current_match",
+                scope="conversation:abc",
+                kind="fact",
+                content="Python current conversation note",
+                updated_at=now - timedelta(minutes=1),
+            ),
+            MemoryRecord(
+                id="global_match",
+                scope="global",
+                kind="fact",
+                content="Python global note",
+                updated_at=now - timedelta(minutes=2),
+            ),
+        ])
+
+        results = store.search(
+            "Python",
+            scopes={"global", "conversation:abc"},
+            limit=1,
+        )
+
+        assert [record.id for record in results] == ["current_match"]
+
     def test_summarize_returns_latest_summary_for_conversation_scope(self):
         now = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
         store = InMemoryMemoryStore([

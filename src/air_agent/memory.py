@@ -74,6 +74,7 @@ class MemoryStore(Protocol):
         query: str,
         *,
         scope: str | None = None,
+        scopes: set[str] | None = None,
         kind: MemoryKind | None = None,
         limit: int | None = None,
     ) -> list[MemoryRecord]:
@@ -101,12 +102,16 @@ class InMemoryMemoryStore:
         query: str,
         *,
         scope: str | None = None,
+        scopes: set[str] | None = None,
         kind: MemoryKind | None = None,
         limit: int | None = None,
     ) -> list[MemoryRecord]:
         scored: list[tuple[int, datetime, MemoryRecord]] = []
+        allowed_scopes = set(scopes) if scopes is not None else None
+        if scope is not None:
+            allowed_scopes = {scope} if allowed_scopes is None else allowed_scopes & {scope}
         for record in self._records.values():
-            if scope is not None and record.scope != scope:
+            if allowed_scopes is not None and record.scope not in allowed_scopes:
                 continue
             if kind is not None and record.kind != kind:
                 continue

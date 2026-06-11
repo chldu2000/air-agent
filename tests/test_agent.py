@@ -267,6 +267,50 @@ async def test_memory_injection_filters_other_conversation_scopes():
 
 
 @pytest.mark.asyncio
+async def test_memory_injection_applies_scope_before_search_limit():
+    provider = FakeCompletionProvider([LLMResponse(content="Scoped before limit")])
+    memory = InMemoryMemoryStore([
+        MemoryRecord(
+            id="other_fact",
+            scope="conversation:other",
+            kind="fact",
+            content="Python Python Python other conversation note",
+        ),
+        MemoryRecord(
+            id="current_fact",
+            scope="conversation:abc",
+            kind="fact",
+            content="Python current conversation note",
+        ),
+        MemoryRecord(
+            id="global_fact",
+            scope="global",
+            kind="fact",
+            content="Python global note",
+        ),
+    ])
+    agent = Agent(
+        AgentConfig(
+            model="fake-model",
+            provider=provider,
+            memory=memory,
+            memory_enabled=True,
+            memory_search_limit=1,
+        )
+    )
+
+    await agent.run("Python", conversation_id="abc")
+
+    memory_context = provider.calls[0]["messages"][0]["content"]
+    assert "other_fact" not in memory_context
+    assert "Other conversation Python note" not in memory_context
+    assert (
+        "[fact scope=conversation:abc id=current_fact]" in memory_context
+        or "[fact scope=global id=global_fact]" in memory_context
+    )
+
+
+@pytest.mark.asyncio
 async def test_memory_injection_preserves_existing_system_prompt_first():
     provider = FakeCompletionProvider([LLMResponse(content="With prompt and memory")])
     memory = InMemoryMemoryStore([

@@ -126,11 +126,14 @@ class Agent:
             return ""
 
         try:
-            records = self.config.memory.search(
+            allowed_scopes = _allowed_memory_scopes(conversation_id)
+            records = _search_memory_records_for_scopes(
+                self.config.memory,
                 user_input,
+                allowed_scopes=allowed_scopes,
                 limit=self.config.memory_search_limit,
+                conversation_id=conversation_id,
             )
-            records = filter_memory_records_for_scope(records, conversation_id)
             summary = (
                 self.config.memory.summarize(conversation_id)
                 if conversation_id is not None
@@ -662,6 +665,45 @@ def _is_memory_context_message(message: dict[str, Any]) -> bool:
         message.get("role") == "system"
         and isinstance(content, str)
         and content.startswith("## Retrieved Memory")
+    )
+
+
+def _allowed_memory_scopes(conversation_id: str | None) -> set[str]:
+    scopes = {"global"}
+    if conversation_id:
+        scopes.add(f"conversation:{conversation_id}")
+    return scopes
+
+
+def _search_memory_records_for_scopes(
+    memory: Any,
+    query: str,
+    *,
+    allowed_scopes: set[str],
+    limit: int | None,
+    conversation_id: str | None,
+) -> list[MemoryRecord]:
+    try:
+        return memory.search(query, scopes=allowed_scopes, limit=limit)
+    except TypeError:
+        if _search_accepts_scopes(memory.search):
+            raise
+
+    records = memory.search(query, limit=None)
+    records = filter_memory_records_for_scope(records, conversation_id)
+    if limit is not None:
+        return records[:limit]
+    return records
+
+
+def _search_accepts_scopes(search: Any) -> bool:
+    try:
+        parameters = inspect.signature(search).parameters
+    except (TypeError, ValueError):
+        return False
+    return "scopes" in parameters or any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
     )
 
 
