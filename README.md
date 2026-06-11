@@ -115,7 +115,40 @@ async def main():
 asyncio.run(main())
 ```
 
-### 6. Observe Runs with Tracing
+### 6. Use Opt-In Memory
+
+Memory is disabled by default. To use it, attach a memory store and set `memory_enabled=True`. Retrieved memory is injected as a separate system message with contextual notes; it is not treated as user instructions.
+
+```python
+import asyncio
+from air_agent import Agent, AgentConfig, InMemoryMemoryStore, MemoryRecord
+
+
+async def main():
+    memory = InMemoryMemoryStore()
+    memory.add(MemoryRecord(
+        id="project-name",
+        scope="global",
+        kind="fact",
+        content="The user's project is named air-agent.",
+    ))
+
+    agent = Agent(AgentConfig(
+        model="gpt-4o",
+        memory=memory,
+        memory_enabled=True,
+    ))
+
+    response = await agent.run("What is my project named?")
+    print(response.content)
+
+
+asyncio.run(main())
+```
+
+Use `FileMemoryStore("memory.json")` instead of `InMemoryMemoryStore()` when you want persistence across processes. Memory records can use the `fact`, `summary`, or `task_state` kinds.
+
+### 7. Observe Runs with Tracing
 
 Tracing is opt-in. When enabled, the agent emits structured `RunEvent` records for LLM calls, tool calls, retries, skill routing, errors, and completion.
 
@@ -216,6 +249,10 @@ Supported environment variables:
 | `AIR_ENABLE_TRACING` | bool | Enable structured event dispatch |
 | `AIR_LOG_EVENTS` | bool | Log structured events as JSON |
 | `AIR_MAX_TOOL_RETRIES` | int | Retries for retryable tool errors |
+| `AIR_MEMORY_ENABLED` | bool | Enable memory retrieval when a memory store is attached |
+| `AIR_MEMORY_SEARCH_LIMIT` | int | Max memory records to retrieve per run |
+| `AIR_MEMORY_MAX_CHARS` | int | Max characters of memory context injected per run |
+| `AIR_MEMORY_SUMMARY_THRESHOLD` | int | Conversation length before automatic summary memory is considered |
 
 ### Custom LLM Providers
 
@@ -450,6 +487,11 @@ AgentConfig(
     provider=None,                # None/"openai" or an LLMProvider object
     default_headers=None,         # Custom provider request headers
     system_prompt="You are an assistant",  # System prompt
+    memory=None,                  # MemoryStore or None
+    memory_enabled=False,         # Enable memory retrieval
+    memory_search_limit=5,        # Max memory records retrieved per run
+    memory_max_chars=4000,        # Max memory context characters
+    memory_summary_threshold=12,  # Turns before summary memory is considered
     max_iterations=20,           # Max tool-calling rounds
     tool_timeout=30.0,           # Single tool call timeout (seconds)
     mcp_servers=[],              # MCP server list
@@ -468,6 +510,7 @@ src/air_agent/
 ├── __init__.py          # Public API exports
 ├── agent.py             # Core Agent (ReAct loop + streaming)
 ├── config.py            # Configuration dataclass
+├── memory.py            # MemoryRecord, MemoryStore, and memory store implementations
 ├── providers/
 │   ├── types.py         # LLMProvider protocol + neutral response types
 │   └── openai.py        # Default OpenAI provider adapter

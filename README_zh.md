@@ -115,7 +115,40 @@ async def main():
 asyncio.run(main())
 ```
 
-### 6. 使用 Tracing 观察运行过程
+### 6. 使用可选 Memory
+
+Memory 默认关闭。需要同时挂载 memory store，并设置 `memory_enabled=True` 才会启用。检索到的 memory 会作为单独的 system message 注入，并标记为上下文笔记；它不会被当作用户指令。
+
+```python
+import asyncio
+from air_agent import Agent, AgentConfig, InMemoryMemoryStore, MemoryRecord
+
+
+async def main():
+    memory = InMemoryMemoryStore()
+    memory.add(MemoryRecord(
+        id="project-name",
+        scope="global",
+        kind="fact",
+        content="用户的项目名是 air-agent。",
+    ))
+
+    agent = Agent(AgentConfig(
+        model="gpt-4o",
+        memory=memory,
+        memory_enabled=True,
+    ))
+
+    response = await agent.run("我的项目叫什么？")
+    print(response.content)
+
+
+asyncio.run(main())
+```
+
+如果需要跨进程持久化，可以把 `InMemoryMemoryStore()` 换成 `FileMemoryStore("memory.json")`。Memory record 支持 `fact`、`summary` 和 `task_state` 三种 kind。
+
+### 7. 使用 Tracing 观察运行过程
 
 Tracing 默认关闭。启用后，Agent 会为 LLM 调用、工具调用、重试、Skill 路由、错误和完成状态输出结构化 `RunEvent` 记录。
 
@@ -216,6 +249,10 @@ agent = Agent(config)
 | `AIR_ENABLE_TRACING` | bool | 启用结构化事件分发 |
 | `AIR_LOG_EVENTS` | bool | 以 JSON 形式记录结构化事件 |
 | `AIR_MAX_TOOL_RETRIES` | int | 可重试工具错误的重试次数 |
+| `AIR_MEMORY_ENABLED` | bool | 挂载 memory store 后启用 memory 检索 |
+| `AIR_MEMORY_SEARCH_LIMIT` | int | 每次运行最多检索的 memory record 数 |
+| `AIR_MEMORY_MAX_CHARS` | int | 每次运行注入的 memory 上下文最大字符数 |
+| `AIR_MEMORY_SUMMARY_THRESHOLD` | int | 对话长度达到该阈值后才考虑自动写入 summary memory |
 
 ### 自定义 LLM Provider
 
@@ -451,6 +488,11 @@ AgentConfig(
     provider=None,                # None/"openai" 或 LLMProvider 对象
     default_headers=None,         # 自定义 provider 请求头
     system_prompt="你是一个助手",  # 系统提示词
+    memory=None,                  # MemoryStore 或 None
+    memory_enabled=False,         # 启用 memory 检索
+    memory_search_limit=5,        # 每次运行最多检索的 memory record 数
+    memory_max_chars=4000,        # memory 上下文最大字符数
+    memory_summary_threshold=12,  # 触发 summary memory 的对话轮次阈值
     max_iterations=20,           # 工具调用最大轮次
     tool_timeout=30.0,           # 单次工具调用超时（秒）
     mcp_servers=[],              # MCP server 列表
@@ -469,6 +511,7 @@ src/air_agent/
 ├── __init__.py          # 公开 API 导出
 ├── agent.py             # 核心 Agent（ReAct 循环 + 流式输出）
 ├── config.py            # 配置数据类
+├── memory.py            # MemoryRecord、MemoryStore 与 memory store 实现
 ├── providers/
 │   ├── types.py         # LLMProvider 协议 + 中立响应类型
 │   └── openai.py        # 默认 OpenAI provider adapter
