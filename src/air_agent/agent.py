@@ -9,7 +9,7 @@ from typing import Any, AsyncIterator
 from uuid import uuid4
 
 from air_agent.config import AgentConfig, SubagentConfig
-from air_agent.memory import filter_memory_records_for_scope, format_memory_context
+from air_agent.memory import MemoryRecord, filter_memory_records_for_scope, format_memory_context
 from air_agent.mcp.client import MCPClient
 from air_agent.providers import LLMToolCall, OpenAIProvider
 from air_agent.tools.builtin import register_builtin_tools
@@ -239,7 +239,13 @@ class Agent:
                 )
                 result = Response(content=response.content or "", usage=usage, history=history)
                 if conversation_id:
-                    self._conversations[conversation_id] = _without_transient_memory_messages(history)[-20:]
+                    clean_history = _without_transient_memory_messages(history)
+                    self._conversations[conversation_id] = clean_history[-20:]
+                    await self._maybe_update_memory_summary(
+                        conversation_id=conversation_id,
+                        history=clean_history,
+                        run_id=run_id,
+                    )
                 return result
 
             results = await asyncio.gather(*[
@@ -505,7 +511,13 @@ class Agent:
                     )
                     yield StreamEvent(type="done", usage=usage_data)
                     if conversation_id:
-                        self._conversations[conversation_id] = _without_transient_memory_messages(history)[-20:]
+                        clean_history = _without_transient_memory_messages(history)
+                        self._conversations[conversation_id] = clean_history[-20:]
+                        await self._maybe_update_memory_summary(
+                            conversation_id=conversation_id,
+                            history=clean_history,
+                            run_id=run_id,
+                        )
                     return
 
                 tool_calls_list = [tool_calls_map[i] for i in sorted(tool_calls_map)]
@@ -562,6 +574,71 @@ class Agent:
     ) -> list[SubagentResult]:
         return await _delegate(self, tasks, config)
 
+    async def _maybe_update_memory_summary(
+        self,
+        *,
+        conversation_id: str | None,
+        history: list[dict[str, Any]],
+        run_id: str,
+    ) -> None:
+        if (
+            not self.config.memory_enabled
+            or self.config.memory is None
+            or not conversation_id
+            or len(history) < self.config.memory_summary_threshold
+        ):
+            return
+
+        try:
+            response = await self._provider.complete(
+                model=self.config.model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Summarize this conversation for future memory. "
+                            "Preserve stable user preferences, decisions, facts, and open tasks. "
+                            "Do not invent information or include unsupported assumptions."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": _conversation_summary_prompt(history),
+                    },
+                ],
+            )
+            summary = (response.content or "").strip()
+            if not summary:
+                return
+
+            self.config.memory.add(
+                MemoryRecord(
+                    id=f"summary:conversation:{conversation_id}",
+                    scope=f"conversation:{conversation_id}",
+                    kind="summary",
+                    content=summary,
+                    metadata={"source": "agent_summary"},
+                )
+            )
+            await self._emit(
+                "memory_summary_updated",
+                run_id=run_id,
+                conversation_id=conversation_id,
+                metadata={"content_length": len(summary)},
+            )
+        except Exception as exc:
+            logger.warning("Failed to update memory summary", exc_info=True)
+            await self._emit(
+                "memory_summary_error",
+                run_id=run_id,
+                conversation_id=conversation_id,
+                content=str(exc) or type(exc).__name__,
+                metadata={
+                    "stage": "summary",
+                    "error_type": type(exc).__name__,
+                },
+            )
+
 
 def _stream_tool_call_to_object(tc: dict[str, Any]) -> Any:
     return SimpleNamespace(
@@ -584,6 +661,25 @@ def _is_memory_context_message(message: dict[str, Any]) -> bool:
         and isinstance(content, str)
         and content.startswith("## Retrieved Memory")
     )
+
+
+def _conversation_summary_prompt(history: list[dict[str, Any]]) -> str:
+    lines = ["Conversation history:"]
+    for message in _without_transient_memory_messages(history):
+        role = message.get("role", "unknown")
+        content = message.get("content")
+        if content is None and role == "assistant" and message.get("tool_calls"):
+            calls = []
+            for tool_call in message["tool_calls"]:
+                function = tool_call.get("function", {})
+                calls.append(
+                    f"{function.get('name', '')}({function.get('arguments', '')})".strip()
+                )
+            content = "Tool calls: " + ", ".join(calls)
+        elif content is None:
+            content = ""
+        lines.append(f"{role}: {content}")
+    return "\n".join(lines)
 
 
 def _build_provider(config: AgentConfig) -> Any:

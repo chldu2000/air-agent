@@ -52,6 +52,20 @@ class NoToolProvider(FakeCompletionProvider):
     supports_tools = False
 
 
+class SummaryFailingProvider(FakeCompletionProvider):
+    async def complete(self, **kwargs):
+        if self.calls:
+            self.calls.append(
+                {
+                    **kwargs,
+                    "messages": [dict(message) for message in kwargs["messages"]],
+                    "tools": list(kwargs["tools"]) if kwargs.get("tools") else None,
+                }
+            )
+            raise RuntimeError("summary exploded")
+        return await super().complete(**kwargs)
+
+
 class ExplodingMemoryStore:
     def add(self, record):
         return record
@@ -451,6 +465,66 @@ async def test_memory_retrieval_failure_emits_event_and_continues():
     }
     assert memory_error.run_id == events[1].run_id
     assert memory_error.conversation_id == "abc"
+
+
+@pytest.mark.asyncio
+async def test_conversation_summary_is_written_after_threshold():
+    provider = FakeCompletionProvider([
+        LLMResponse(content="Main answer"),
+        LLMResponse(content="User prefers concise answers."),
+    ])
+    memory = InMemoryMemoryStore()
+    agent = Agent(
+        AgentConfig(
+            model="fake-model",
+            provider=provider,
+            memory=memory,
+            memory_enabled=True,
+            memory_summary_threshold=1,
+        )
+    )
+
+    result = await agent.run("Please be brief", conversation_id="abc")
+
+    assert result.content == "Main answer"
+    assert memory.summarize("abc") == "User prefers concise answers."
+    assert len(provider.calls) == 2
+    summary_messages = provider.calls[1]["messages"]
+    assert summary_messages[0]["role"] == "system"
+    assert summary_messages[0]["content"].startswith("Summarize this conversation")
+    assert summary_messages[1]["role"] == "user"
+    assert "Please be brief" in summary_messages[1]["content"]
+    assert "Main answer" in summary_messages[1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_conversation_summary_failure_does_not_break_run():
+    events = []
+    provider = SummaryFailingProvider([LLMResponse(content="Main answer")])
+    memory = InMemoryMemoryStore()
+    agent = Agent(
+        AgentConfig(
+            model="fake-model",
+            provider=provider,
+            enable_tracing=True,
+            event_handlers=[events.append],
+            memory=memory,
+            memory_enabled=True,
+            memory_summary_threshold=1,
+        )
+    )
+
+    result = await agent.run("Please be brief", conversation_id="abc")
+
+    assert result.content == "Main answer"
+    assert memory.summarize("abc") is None
+    summary_error = [event for event in events if event.type == "memory_summary_error"][0]
+    assert summary_error.content == "summary exploded"
+    assert summary_error.metadata == {
+        "stage": "summary",
+        "error_type": "RuntimeError",
+    }
+    assert summary_error.conversation_id == "abc"
 
 
 @pytest.mark.asyncio
