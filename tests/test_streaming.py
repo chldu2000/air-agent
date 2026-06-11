@@ -198,6 +198,55 @@ async def test_streaming_memory_context_is_not_persisted_in_conversation_history
 
 
 @pytest.mark.asyncio
+async def test_streaming_tiny_memory_context_budget_is_not_persisted_or_replayed():
+    provider = FakeStreamingProvider([
+        [LLMStreamChunk(content_delta="First")],
+        [LLMStreamChunk(content_delta="Second")],
+    ])
+    memory = InMemoryMemoryStore([
+        MemoryRecord(
+            id="fact_1",
+            scope="global",
+            kind="fact",
+            content="User likes terse answers.",
+        )
+    ])
+    agent = Agent(
+        AgentConfig(
+            model="fake-model",
+            provider=provider,
+            memory=memory,
+            memory_enabled=True,
+            memory_max_chars=12,
+        )
+    )
+
+    first_stream = await agent.run("terse", conversation_id="abc", stream=True)
+    first_events = [event async for event in first_stream]
+    second_stream = await agent.run("terse again", conversation_id="abc", stream=True)
+    second_events = [event async for event in second_stream]
+
+    assert [event.type for event in first_events] == ["text", "done"]
+    assert [event.type for event in second_events] == ["text", "done"]
+    for message in provider.stream_calls[1]["messages"]:
+        assert not (
+            message["role"] == "system"
+            and (
+                "Retrieved Memory" in message["content"]
+                or "[truncated]" in message["content"]
+            )
+        )
+    for message in agent._conversations["abc"]:
+        assert not (
+            message["role"] == "system"
+            and (
+                "Retrieved Memory" in message["content"]
+                or "[truncated]" in message["content"]
+            )
+        )
+
+
+@pytest.mark.asyncio
 async def test_streaming_uses_custom_provider_for_tool_call():
     provider = FakeStreamingProvider(
         [

@@ -296,7 +296,23 @@ class TestMemoryContextHelpers:
         )
 
         assert len(context) <= 80
+        assert context.startswith("## Retrieved Memory")
         assert context.endswith("[truncated]")
+
+    def test_format_memory_context_returns_empty_when_budget_cannot_preserve_marker(self):
+        context = format_memory_context(
+            records=[
+                MemoryRecord(
+                    id="fact_1",
+                    scope="global",
+                    kind="fact",
+                    content="User likes terse answers.",
+                )
+            ],
+            max_chars=12,
+        )
+
+        assert context == ""
 
 
 class TestFileMemoryStore:

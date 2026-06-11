@@ -310,6 +310,51 @@ async def test_memory_context_is_not_persisted_in_conversation_history():
 
 
 @pytest.mark.asyncio
+async def test_tiny_memory_context_budget_is_not_persisted_or_replayed():
+    provider = FakeCompletionProvider([
+        LLMResponse(content="First"),
+        LLMResponse(content="Second"),
+    ])
+    memory = InMemoryMemoryStore([
+        MemoryRecord(
+            id="fact_1",
+            scope="global",
+            kind="fact",
+            content="User likes terse answers.",
+        )
+    ])
+    agent = Agent(
+        AgentConfig(
+            model="fake-model",
+            provider=provider,
+            memory=memory,
+            memory_enabled=True,
+            memory_max_chars=12,
+        )
+    )
+
+    await agent.run("terse", conversation_id="abc")
+    await agent.run("terse again", conversation_id="abc")
+
+    for message in provider.calls[1]["messages"]:
+        assert not (
+            message["role"] == "system"
+            and (
+                "Retrieved Memory" in message["content"]
+                or "[truncated]" in message["content"]
+            )
+        )
+    for message in agent._conversations["abc"]:
+        assert not (
+            message["role"] == "system"
+            and (
+                "Retrieved Memory" in message["content"]
+                or "[truncated]" in message["content"]
+            )
+        )
+
+
+@pytest.mark.asyncio
 async def test_agent_rejects_tools_when_provider_does_not_support_tools():
     provider = NoToolProvider([LLMResponse(content="unused")])
     agent = Agent(AgentConfig(model="fake-model", provider=provider))
