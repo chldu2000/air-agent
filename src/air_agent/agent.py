@@ -94,7 +94,12 @@ class Agent:
     async def _emit(self, event_type: str, **kwargs: Any) -> None:
         await self._events.emit(RunEvent(type=event_type, **kwargs))
 
-    def _build_messages(self, user_input: str, conversation_id: str | None) -> list[dict[str, Any]]:
+    async def _build_messages(
+        self,
+        user_input: str,
+        conversation_id: str | None,
+        run_id: str,
+    ) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = []
         if self.config.system_prompt or self._skill_manager:
             system_content = self.config.system_prompt or ""
@@ -103,7 +108,7 @@ class Agent:
                 if summary:
                     system_content += f"\n\n## Available Skills\n{summary}"
             messages.append({"role": "system", "content": system_content})
-        memory_context = self._build_memory_context(user_input, conversation_id)
+        memory_context = await self._build_memory_context(user_input, conversation_id, run_id)
         if memory_context:
             messages.append({"role": "system", "content": memory_context})
         if conversation_id and conversation_id in self._conversations:
@@ -111,7 +116,12 @@ class Agent:
         messages.append({"role": "user", "content": user_input})
         return messages
 
-    def _build_memory_context(self, user_input: str, conversation_id: str | None) -> str:
+    async def _build_memory_context(
+        self,
+        user_input: str,
+        conversation_id: str | None,
+        run_id: str,
+    ) -> str:
         if not self.config.memory_enabled or self.config.memory is None:
             return ""
 
@@ -126,13 +136,33 @@ class Agent:
                 if conversation_id is not None
                 else None
             )
+            await self._emit(
+                "memory_retrieved",
+                run_id=run_id,
+                conversation_id=conversation_id,
+                metadata={
+                    "record_count": len(records),
+                    "has_summary": summary is not None,
+                    "search_limit": self.config.memory_search_limit,
+                },
+            )
             return format_memory_context(
                 records=records,
                 summary=summary,
                 max_chars=self.config.memory_max_chars,
             )
-        except Exception:
+        except Exception as exc:
             logger.warning("Failed to build memory context", exc_info=True)
+            await self._emit(
+                "memory_error",
+                run_id=run_id,
+                conversation_id=conversation_id,
+                content=str(exc) or type(exc).__name__,
+                metadata={
+                    "stage": "retrieval",
+                    "error_type": type(exc).__name__,
+                },
+            )
             return ""
 
     async def run(
@@ -142,8 +172,8 @@ class Agent:
         conversation_id: str | None = None,
         stream: bool = False,
     ) -> Response | AsyncIterator[StreamEvent]:
-        messages = self._build_messages(message, conversation_id)
         run_id = f"run_{uuid4().hex}"
+        messages = await self._build_messages(message, conversation_id, run_id)
         if stream:
             return await self._run_stream(messages, conversation_id, run_id)
         return await self._run(messages, conversation_id, run_id=run_id)

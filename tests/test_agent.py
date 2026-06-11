@@ -52,6 +52,20 @@ class NoToolProvider(FakeCompletionProvider):
     supports_tools = False
 
 
+class ExplodingMemoryStore:
+    def add(self, record):
+        return record
+
+    def search(self, query, *, scope=None, kind=None, limit=None):
+        raise ValueError("search exploded")
+
+    def summarize(self, conversation_id):
+        return None
+
+    def clear(self, *, scope=None):
+        pass
+
+
 @pytest.mark.asyncio
 async def test_basic_conversation():
     config = AgentConfig(model="gpt-4o", api_key="test-key")
@@ -352,6 +366,91 @@ async def test_tiny_memory_context_budget_is_not_persisted_or_replayed():
                 or "[truncated]" in message["content"]
             )
         )
+
+
+@pytest.mark.asyncio
+async def test_memory_retrieval_emits_tracing_event():
+    events = []
+    provider = FakeCompletionProvider([LLMResponse(content="With traced memory")])
+    memory = InMemoryMemoryStore([
+        MemoryRecord(
+            id="global_fact",
+            scope="global",
+            kind="fact",
+            content="Python preference",
+        ),
+        MemoryRecord(
+            id="current_fact",
+            scope="conversation:abc",
+            kind="fact",
+            content="Current conversation Python note",
+        ),
+        MemoryRecord(
+            id="other_fact",
+            scope="conversation:other",
+            kind="fact",
+            content="Other conversation Python note",
+        ),
+        MemoryRecord(
+            id="summary_1",
+            scope="conversation:abc",
+            kind="summary",
+            content="Existing conversation summary",
+        ),
+    ])
+    agent = Agent(
+        AgentConfig(
+            model="fake-model",
+            provider=provider,
+            enable_tracing=True,
+            event_handlers=[events.append],
+            memory=memory,
+            memory_enabled=True,
+            memory_search_limit=7,
+        )
+    )
+
+    await agent.run("Python", conversation_id="abc")
+
+    memory_event = events[0]
+    assert memory_event.type == "memory_retrieved"
+    assert memory_event.run_id == events[1].run_id
+    assert memory_event.conversation_id == "abc"
+    assert memory_event.metadata == {
+        "record_count": 2,
+        "has_summary": True,
+        "search_limit": 7,
+    }
+
+
+@pytest.mark.asyncio
+async def test_memory_retrieval_failure_emits_event_and_continues():
+    events = []
+    provider = FakeCompletionProvider([LLMResponse(content="No memory but continued")])
+    agent = Agent(
+        AgentConfig(
+            model="fake-model",
+            provider=provider,
+            enable_tracing=True,
+            event_handlers=[events.append],
+            memory=ExplodingMemoryStore(),
+            memory_enabled=True,
+        )
+    )
+
+    result = await agent.run("Python", conversation_id="abc")
+
+    assert result.content == "No memory but continued"
+    assert provider.calls[0]["messages"] == [{"role": "user", "content": "Python"}]
+    memory_error = events[0]
+    assert memory_error.type == "memory_error"
+    assert memory_error.content == "search exploded"
+    assert memory_error.metadata == {
+        "stage": "retrieval",
+        "error_type": "ValueError",
+    }
+    assert memory_error.run_id == events[1].run_id
+    assert memory_error.conversation_id == "abc"
 
 
 @pytest.mark.asyncio
