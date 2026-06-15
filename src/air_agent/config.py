@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from air_agent.memory import MemoryStore
 from air_agent.tools.builtin.config import BuiltinToolsConfig
@@ -77,10 +77,17 @@ class AgentConfig:
     memory_search_limit: int = 5
     memory_max_chars: int = 4000
     memory_summary_threshold: int = 12
+    strategy: Literal["react", "plan_execute"] = "react"
+    planner: Any = None
+    max_plan_steps: int = 8
 
     def __post_init__(self):
         if self.api_key is None:
             self.api_key = os.environ.get("OPENAI_API_KEY")
+        if self.strategy not in {"react", "plan_execute"}:
+            raise ValueError("strategy must be one of: react, plan_execute")
+        if self.max_plan_steps < 1:
+            raise ValueError("max_plan_steps must be greater than 0")
 
     @classmethod
     def from_json(cls, path: str) -> AgentConfig:
@@ -94,10 +101,12 @@ class AgentConfig:
             raise ValueError("provider must be a string or null")
         if data.get("memory") is not None:
             raise ValueError("memory must be configured programmatically")
+        if data.get("planner") is not None:
+            raise ValueError("planner must be configured programmatically")
         field_names = {
             f.name
             for f in cls.__dataclass_fields__.values()
-            if f.name not in {"event_handlers", "memory"}
+            if f.name not in {"event_handlers", "memory", "planner"}
         }
         kwargs = {k: v for k, v in data.items() if k in field_names}
 
@@ -126,6 +135,8 @@ class AgentConfig:
             f"{prefix}MEMORY_SEARCH_LIMIT": ("memory_search_limit", int),
             f"{prefix}MEMORY_MAX_CHARS": ("memory_max_chars", int),
             f"{prefix}MEMORY_SUMMARY_THRESHOLD": ("memory_summary_threshold", int),
+            f"{prefix}STRATEGY": ("strategy", str),
+            f"{prefix}MAX_PLAN_STEPS": ("max_plan_steps", int),
         }
 
         for env_key, (field_name, type_) in env_map.items():

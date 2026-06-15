@@ -5,12 +5,13 @@ import inspect
 import logging
 import time
 from types import SimpleNamespace
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Literal
 from uuid import uuid4
 
 from air_agent.config import AgentConfig, SubagentConfig
 from air_agent.memory import MemoryRecord, filter_memory_records_for_scope, format_memory_context
 from air_agent.mcp.client import MCPClient
+from air_agent.planner import LLMPlanner, Plan, PlanContext, PlanStep, Planner, StepResult
 from air_agent.providers import LLMToolCall, OpenAIProvider
 from air_agent.tools.builtin import register_builtin_tools
 from air_agent.tools.builtin.config import BuiltinToolsConfig
@@ -45,6 +46,11 @@ class Agent:
             self._skill_manager = SkillManager(config.skills_dir)
             self._skill_manager.load()
             self._skill_router = LLMSkillRouter(provider=self._provider, model=config.model)
+        self._planner: Planner = config.planner or LLMPlanner(
+            provider=self._provider,
+            model=config.model,
+            max_steps=config.max_plan_steps,
+        )
 
     def tool(self, name: str | None = None, description: str = ""):
         def decorator(func):
@@ -174,11 +180,25 @@ class Agent:
         *,
         conversation_id: str | None = None,
         stream: bool = False,
+        strategy: Literal["react", "plan_execute"] | None = None,
     ) -> Response | AsyncIterator[StreamEvent]:
+        selected_strategy = strategy or self.config.strategy
+        if selected_strategy not in {"react", "plan_execute"}:
+            raise ValueError("strategy must be one of: react, plan_execute")
+        if stream and selected_strategy == "plan_execute":
+            raise RuntimeError("plan_execute is non-streaming in v0.6")
+
         run_id = f"run_{uuid4().hex}"
         messages = await self._build_messages(message, conversation_id, run_id)
         if stream:
             return await self._run_stream(messages, conversation_id, run_id)
+        if selected_strategy == "plan_execute":
+            return await self._run_plan_execute(
+                goal=message,
+                messages=messages,
+                conversation_id=conversation_id,
+                run_id=run_id,
+            )
         return await self._run(messages, conversation_id, run_id=run_id)
 
     async def _run(
@@ -186,6 +206,10 @@ class Agent:
         messages: list[dict],
         conversation_id: str | None = None,
         run_id: str | None = None,
+        *,
+        emit_done: bool = True,
+        save_conversation: bool = True,
+        route_skills: bool = True,
     ) -> Response:
         run_id = run_id or f"run_{uuid4().hex}"
         tools = self._registry.get_openai_tools() or None
@@ -193,12 +217,13 @@ class Agent:
             raise RuntimeError("Configured LLM provider does not support tool calling")
         history: list[dict[str, Any]] = list(messages)
 
-        history = await self._route_and_inject_skills(
-            history,
-            user_input=messages[-1]["content"],
-            run_id=run_id,
-            conversation_id=conversation_id,
-        )
+        if route_skills:
+            history = await self._route_and_inject_skills(
+                history,
+                user_input=messages[-1]["content"],
+                run_id=run_id,
+                conversation_id=conversation_id,
+            )
 
         for iteration in range(self.config.max_iterations):
             kwargs: dict[str, Any] = {
@@ -232,16 +257,17 @@ class Agent:
 
             if not response.tool_calls:
                 content = response.content or ""
-                await self._emit(
-                    "done",
-                    run_id=run_id,
-                    conversation_id=conversation_id,
-                    iteration=iteration,
-                    content=content,
-                    usage=usage,
-                )
+                if emit_done:
+                    await self._emit(
+                        "done",
+                        run_id=run_id,
+                        conversation_id=conversation_id,
+                        iteration=iteration,
+                        content=content,
+                        usage=usage,
+                    )
                 result = Response(content=response.content or "", usage=usage, history=history)
-                if conversation_id:
+                if conversation_id and save_conversation:
                     clean_history = _without_transient_memory_messages(history)
                     self._conversations[conversation_id] = clean_history[-20:]
                     await self._maybe_update_memory_summary(
@@ -268,13 +294,288 @@ class Agent:
                 })
 
         content = "Reached maximum iterations without completion."
+        if emit_done:
+            await self._emit(
+                "done",
+                run_id=run_id,
+                conversation_id=conversation_id,
+                content=content,
+            )
+        return Response(content=content, history=history)
+
+    async def _run_plan_execute(
+        self,
+        *,
+        goal: str,
+        messages: list[dict[str, Any]],
+        conversation_id: str | None,
+        run_id: str,
+    ) -> Response:
+        step_results: list[StepResult] = []
+        plan_messages = await self._route_and_inject_skills(
+            list(messages),
+            user_input=goal,
+            run_id=run_id,
+            conversation_id=conversation_id,
+        )
+
+        async def run_step(step: PlanStep) -> StepResult:
+            step_messages = _messages_for_plan_step(
+                messages=plan_messages,
+                goal=goal,
+                step=step,
+                previous_results=step_results,
+            )
+            try:
+                response = await self._run(
+                    step_messages,
+                    conversation_id=conversation_id,
+                    run_id=run_id,
+                    emit_done=False,
+                    save_conversation=False,
+                    route_skills=False,
+                )
+            except Exception as exc:
+                return StepResult(
+                    step_id=step.id,
+                    status="error",
+                    error=str(exc) or type(exc).__name__,
+                    metadata={"error_type": type(exc).__name__},
+                )
+            return StepResult(
+                step_id=step.id,
+                status="success",
+                content=response.content,
+                metadata={"history_length": len(response.history)},
+            )
+
+        context = PlanContext(
+            goal=goal,
+            messages=plan_messages,
+            conversation_id=conversation_id,
+            previous_results=step_results,
+            run_step=run_step,
+        )
+
+        try:
+            plan = await self._planner.create_plan(goal, context)
+            plan.validate()
+        except Exception as exc:
+            content = f"Failed to create plan: {str(exc) or type(exc).__name__}"
+            await self._emit(
+                "plan_revised",
+                run_id=run_id,
+                conversation_id=conversation_id,
+                content=content,
+                metadata={
+                    "stage": "create_plan",
+                    "plan_status": "error",
+                    "error_type": type(exc).__name__,
+                },
+            )
+            await self._emit(
+                "done",
+                run_id=run_id,
+                conversation_id=conversation_id,
+                content=content,
+            )
+            history = _final_plan_history(messages, content)
+            if conversation_id:
+                clean_history = _without_transient_memory_messages(history)
+                self._conversations[conversation_id] = clean_history[-20:]
+                await self._maybe_update_memory_summary(
+                    conversation_id=conversation_id,
+                    history=clean_history,
+                    run_id=run_id,
+                )
+            return Response(content=content, history=history)
+
+        plan.status = "running"
+        await self._emit(
+            "plan_created",
+            run_id=run_id,
+            conversation_id=conversation_id,
+            content=goal,
+            metadata={
+                "plan_status": plan.status,
+                "step_count": len(plan.steps),
+                "steps": [step.to_dict() for step in plan.steps],
+            },
+        )
+
+        for index, step in enumerate(plan.steps):
+            if any(_result_status(step_results, dependency) != "success" for dependency in step.dependencies):
+                step.status = "skipped"
+                skipped = StepResult(
+                    step_id=step.id,
+                    status="skipped",
+                    error="Skipped because one or more dependencies did not succeed.",
+                    metadata={"dependencies": list(step.dependencies)},
+                )
+                step_results.append(skipped)
+                await self._emit_step_end(
+                    run_id=run_id,
+                    conversation_id=conversation_id,
+                    step=step,
+                    result=skipped,
+                    index=index,
+                    plan=plan,
+                )
+                continue
+
+            step.status = "running"
+            await self._emit(
+                "step_start",
+                run_id=run_id,
+                conversation_id=conversation_id,
+                name=step.id,
+                content=step.description,
+                metadata={
+                    "step_index": index,
+                    "step_status": step.status,
+                    "dependencies": list(step.dependencies),
+                    "plan_status": plan.status,
+                },
+            )
+            try:
+                result = await self._planner.execute_step(step, context)
+            except Exception as exc:
+                result = StepResult(
+                    step_id=step.id,
+                    status="error",
+                    error=str(exc) or type(exc).__name__,
+                    metadata={"error_type": type(exc).__name__},
+                )
+            step_results.append(result)
+            if result.status == "success":
+                step.status = "success"
+                await self._emit_step_end(
+                    run_id=run_id,
+                    conversation_id=conversation_id,
+                    step=step,
+                    result=result,
+                    index=index,
+                    plan=plan,
+                )
+                continue
+
+            step.status = "error"
+            await self._emit(
+                "step_error",
+                run_id=run_id,
+                conversation_id=conversation_id,
+                name=step.id,
+                content=result.error or result.content,
+                metadata={
+                    "step_index": index,
+                    "step_status": result.status,
+                    "dependencies": list(step.dependencies),
+                    "plan_status": plan.status,
+                    **result.metadata,
+                },
+            )
+            plan = await self._planner.revise_plan(plan, result)
+            await self._emit(
+                "plan_revised",
+                run_id=run_id,
+                conversation_id=conversation_id,
+                content=result.error or result.content,
+                metadata={
+                    "plan_status": plan.status,
+                    "failed_step_id": result.step_id,
+                    "steps": [plan_step.to_dict() for plan_step in plan.steps],
+                },
+            )
+
+        if any(result.status == "error" for result in step_results):
+            plan.status = "error"
+        elif all(result.status == "success" for result in step_results):
+            plan.status = "success"
+        else:
+            plan.status = "revised"
+
+        final_content, usage = await self._synthesize_plan_answer(goal, plan, step_results)
         await self._emit(
             "done",
             run_id=run_id,
             conversation_id=conversation_id,
-            content=content,
+            content=final_content,
+            usage=usage,
+            metadata={"strategy": "plan_execute", "plan_status": plan.status},
         )
-        return Response(content=content, history=history)
+        history = _final_plan_history(messages, final_content)
+        if conversation_id:
+            clean_history = _without_transient_memory_messages(history)
+            self._conversations[conversation_id] = clean_history[-20:]
+            await self._maybe_update_memory_summary(
+                conversation_id=conversation_id,
+                history=clean_history,
+                run_id=run_id,
+            )
+        return Response(content=final_content, usage=usage, history=history)
+
+    async def _emit_step_end(
+        self,
+        *,
+        run_id: str,
+        conversation_id: str | None,
+        step: PlanStep,
+        result: StepResult,
+        index: int,
+        plan: Plan,
+    ) -> None:
+        await self._emit(
+            "step_end",
+            run_id=run_id,
+            conversation_id=conversation_id,
+            name=step.id,
+            content=result.content or result.error,
+            metadata={
+                "step_index": index,
+                "step_status": result.status,
+                "dependencies": list(step.dependencies),
+                "plan_status": plan.status,
+                **result.metadata,
+            },
+        )
+
+    async def _synthesize_plan_answer(
+        self,
+        goal: str,
+        plan: Plan,
+        step_results: list[StepResult],
+    ) -> tuple[str, TokenUsage | None]:
+        prompt = _plan_final_prompt(goal, plan, step_results)
+        try:
+            response = await self._provider.complete(
+                model=self.config.model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Synthesize the final answer for the user from plan execution results. "
+                            "If any step failed or was skipped, explicitly name those steps."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                tools=None,
+            )
+            content = response.content or ""
+            usage = response.usage
+        except Exception as exc:
+            logger.warning("Failed to synthesize plan answer", exc_info=True)
+            content = f"Plan execution finished, but final answer synthesis failed: {str(exc) or type(exc).__name__}"
+            usage = None
+
+        problem_results = [result for result in step_results if result.status in {"error", "skipped"}]
+        if problem_results:
+            lines = ["", "Plan execution issues:"]
+            for result in problem_results:
+                detail = result.error or result.content or result.status
+                lines.append(f"- {result.step_id}: {result.status} - {detail}")
+            content = content.rstrip() + "\n" + "\n".join(lines)
+        return content, usage
 
     async def _route_and_inject_skills(
         self,
@@ -735,6 +1036,62 @@ def _conversation_summary_prompt(history: list[dict[str, Any]]) -> str:
             content = ""
         lines.append(f"{role}: {content}")
     return "\n".join(lines)
+
+
+def _messages_for_plan_step(
+    *,
+    messages: list[dict[str, Any]],
+    goal: str,
+    step: PlanStep,
+    previous_results: list[StepResult],
+) -> list[dict[str, Any]]:
+    step_messages = list(messages[:-1])
+    step_messages.append(
+        {
+            "role": "user",
+            "content": (
+                "Execute one step from a plan using the available tools when useful.\n\n"
+                f"Original goal:\n{goal}\n\n"
+                f"Current step id: {step.id}\n"
+                f"Current step description: {step.description}\n"
+                f"Dependencies: {', '.join(step.dependencies) if step.dependencies else 'none'}\n\n"
+                "Previous step results:\n"
+                f"{_format_step_results(previous_results) or 'none'}\n\n"
+                "Return only the result for this step."
+            ),
+        }
+    )
+    return step_messages
+
+
+def _plan_final_prompt(goal: str, plan: Plan, step_results: list[StepResult]) -> str:
+    return (
+        f"Original goal:\n{goal}\n\n"
+        "Plan:\n"
+        f"{plan.to_dict()}\n\n"
+        "Step results:\n"
+        f"{_format_step_results(step_results)}\n\n"
+        "Write the final answer for the user."
+    )
+
+
+def _format_step_results(step_results: list[StepResult]) -> str:
+    lines = []
+    for result in step_results:
+        detail = result.content if result.status == "success" else result.error or result.content
+        lines.append(f"- {result.step_id}: {result.status} - {detail}")
+    return "\n".join(lines)
+
+
+def _result_status(step_results: list[StepResult], step_id: str) -> str | None:
+    for result in reversed(step_results):
+        if result.step_id == step_id:
+            return result.status
+    return None
+
+
+def _final_plan_history(messages: list[dict[str, Any]], final_content: str) -> list[dict[str, Any]]:
+    return list(messages) + [{"role": "assistant", "content": final_content}]
 
 
 def _build_provider(config: AgentConfig) -> Any:

@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from air_agent.agent import Agent
 from air_agent.config import AgentConfig
 from air_agent.memory import InMemoryMemoryStore, MemoryRecord
+from air_agent.planner import Plan, PlanContext, PlanStep, StepResult
 from air_agent.providers import LLMResponse, LLMToolCall
 from air_agent.providers.openai import OpenAIProvider
 from air_agent.types import Response, TokenUsage
@@ -78,6 +79,43 @@ class ExplodingMemoryStore:
 
     def clear(self, *, scope=None):
         pass
+
+
+class StaticPlanner:
+    def __init__(self, plan: Plan, results: dict[str, StepResult] | None = None):
+        self.plan = plan
+        self.results = results or {}
+        self.executed: list[str] = []
+        self.revisions: list[StepResult] = []
+
+    async def create_plan(self, goal: str, context: PlanContext) -> Plan:
+        return self.plan
+
+    async def execute_step(self, step: PlanStep, context: PlanContext) -> StepResult:
+        self.executed.append(step.id)
+        if step.id in self.results:
+            return self.results[step.id]
+        if context.run_step is None:
+            raise RuntimeError("missing step runner")
+        return await context.run_step(step)
+
+    async def revise_plan(self, plan: Plan, result: StepResult) -> Plan:
+        self.revisions.append(result)
+        if result.status == "error":
+            failed = result.step_id
+            for step in plan.steps:
+                if step.id == failed:
+                    step.status = "error"
+                elif failed in step.dependencies:
+                    step.status = "skipped"
+            plan.status = "revised"
+        return plan
+
+
+class ExecuteExplodingPlanner(StaticPlanner):
+    async def execute_step(self, step: PlanStep, context: PlanContext) -> StepResult:
+        self.executed.append(step.id)
+        raise RuntimeError("planner step exploded")
 
 
 @pytest.mark.asyncio
@@ -169,6 +207,209 @@ async def test_run_uses_custom_provider_for_tool_call_loop():
         {"role": "tool", "tool_call_id": "tc_1", "content": "8"},
         {"role": "assistant", "content": "The result is 8."},
     ]
+
+
+@pytest.mark.asyncio
+async def test_plan_execute_per_call_strategy_runs_llm_plan_steps_in_order():
+    provider = FakeCompletionProvider([
+        LLMResponse(content='{"steps":[{"id":"step_1","description":"Research"},{"id":"step_2","description":"Summarize","dependencies":["step_1"]}]}'),
+        LLMResponse(content="Research result"),
+        LLMResponse(content="Summary result"),
+        LLMResponse(content="Final answer"),
+    ])
+    agent = Agent(AgentConfig(model="fake-model", provider=provider))
+
+    result = await agent.run("Make a plan", strategy="plan_execute")
+
+    assert result.content == "Final answer"
+    assert len(provider.calls) == 4
+    assert provider.calls[0]["tools"] is None
+    assert "Maximum steps: 8" in provider.calls[0]["messages"][1]["content"]
+    assert "Research" in provider.calls[1]["messages"][-1]["content"]
+    assert "Summarize" in provider.calls[2]["messages"][-1]["content"]
+    assert provider.calls[3]["tools"] is None
+
+
+@pytest.mark.asyncio
+async def test_plan_execute_can_be_enabled_from_config_strategy():
+    provider = FakeCompletionProvider([
+        LLMResponse(content='{"steps":[{"id":"step_1","description":"Do one thing"}]}'),
+        LLMResponse(content="Step result"),
+        LLMResponse(content="Final answer from config"),
+    ])
+    agent = Agent(AgentConfig(model="fake-model", provider=provider, strategy="plan_execute"))
+
+    result = await agent.run("Use config strategy")
+
+    assert result.content == "Final answer from config"
+    assert len(provider.calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_plan_execute_rejects_streaming():
+    provider = FakeCompletionProvider([])
+    agent = Agent(AgentConfig(model="fake-model", provider=provider, strategy="plan_execute"))
+
+    with pytest.raises(RuntimeError, match="non-streaming"):
+        await agent.run("Stream this", stream=True)
+
+
+@pytest.mark.asyncio
+async def test_plan_execute_failed_step_revises_and_skips_dependents():
+    provider = FakeCompletionProvider([LLMResponse(content="A short final answer")])
+    plan = Plan(
+        goal="Goal",
+        steps=[
+            PlanStep(id="step_1", description="First"),
+            PlanStep(id="step_2", description="Second", dependencies=["step_1"]),
+        ],
+    )
+    planner = StaticPlanner(plan, {"step_1": StepResult(step_id="step_1", status="error", error="boom")})
+    agent = Agent(AgentConfig(model="fake-model", provider=provider, strategy="plan_execute", planner=planner))
+
+    result = await agent.run("Goal")
+
+    assert planner.executed == ["step_1"]
+    assert [revision.step_id for revision in planner.revisions] == ["step_1"]
+    assert "step_1" in result.content
+    assert "step_2" in result.content
+    assert "skipped" in result.content.lower()
+
+
+@pytest.mark.asyncio
+async def test_plan_execute_persists_only_original_turn_and_final_answer():
+    provider = FakeCompletionProvider([
+        LLMResponse(content='{"steps":[{"id":"step_1","description":"Do work"}]}'),
+        LLMResponse(content="Step result"),
+        LLMResponse(content="Final answer"),
+    ])
+    agent = Agent(AgentConfig(model="fake-model", provider=provider, strategy="plan_execute"))
+
+    await agent.run("Remember only this", conversation_id="c1")
+
+    assert agent._conversations["c1"] == [
+        {"role": "user", "content": "Remember only this"},
+        {"role": "assistant", "content": "Final answer"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_plan_execute_emits_ordered_events_and_handler_failures_do_not_break_execution():
+    events = []
+
+    def collect(event):
+        events.append(event)
+
+    def explode(event):
+        if event.type == "step_start":
+            raise RuntimeError("handler broke")
+
+    provider = FakeCompletionProvider([
+        LLMResponse(content='{"steps":[{"id":"step_1","description":"Do work"}]}'),
+        LLMResponse(content="Step result"),
+        LLMResponse(content="Final answer"),
+    ])
+    agent = Agent(AgentConfig(
+        model="fake-model",
+        provider=provider,
+        strategy="plan_execute",
+        enable_tracing=True,
+        event_handlers=[explode, collect],
+    ))
+
+    result = await agent.run("Trace this", conversation_id="c1")
+
+    assert result.content == "Final answer"
+    event_types = [event.type for event in events]
+    assert event_types.index("plan_created") < event_types.index("step_start")
+    assert event_types.index("step_start") < event_types.index("step_end")
+    assert event_types.index("step_end") < event_types.index("done")
+    step_start = next(event for event in events if event.type == "step_start")
+    assert step_start.run_id
+    assert step_start.conversation_id == "c1"
+    assert step_start.name == "step_1"
+    assert step_start.metadata["step_index"] == 0
+
+
+@pytest.mark.asyncio
+async def test_plan_execute_malformed_plan_returns_controlled_error_and_done_event():
+    events = []
+    provider = FakeCompletionProvider([LLMResponse(content="not-json")])
+    agent = Agent(AgentConfig(
+        model="fake-model",
+        provider=provider,
+        strategy="plan_execute",
+        enable_tracing=True,
+        event_handlers=[events.append],
+    ))
+
+    result = await agent.run("Bad plan please")
+
+    assert "Failed to create plan" in result.content
+    assert [event.type for event in events] == ["plan_revised", "done"]
+    assert events[0].metadata["stage"] == "create_plan"
+
+
+@pytest.mark.asyncio
+async def test_plan_execute_planner_step_exception_emits_error_and_skips_dependents():
+    events = []
+    provider = FakeCompletionProvider([LLMResponse(content="Final")])
+    plan = Plan(
+        goal="Goal",
+        steps=[
+            PlanStep(id="step_1", description="First"),
+            PlanStep(id="step_2", description="Second", dependencies=["step_1"]),
+        ],
+    )
+    planner = ExecuteExplodingPlanner(plan)
+    agent = Agent(AgentConfig(
+        model="fake-model",
+        provider=provider,
+        strategy="plan_execute",
+        planner=planner,
+        enable_tracing=True,
+        event_handlers=[events.append],
+    ))
+
+    result = await agent.run("Goal")
+
+    assert planner.executed == ["step_1"]
+    assert "step_1" in result.content
+    assert "step_2" in result.content
+    assert "planner step exploded" in result.content
+    event_types = [event.type for event in events]
+    assert "step_error" in event_types
+    assert "plan_revised" in event_types
+    assert any(event.type == "step_end" and event.name == "step_2" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_plan_execute_tool_events_are_bracketed_by_step_events():
+    events = []
+    provider = FakeCompletionProvider([
+        LLMResponse(content='{"steps":[{"id":"step_1","description":"Use the add tool"}]}'),
+        LLMResponse(content="", tool_calls=[LLMToolCall(id="tc_1", name="add", arguments='{"a": 1, "b": 2}')]),
+        LLMResponse(content="Tool result is 3"),
+        LLMResponse(content="Final answer"),
+    ])
+    agent = Agent(AgentConfig(
+        model="fake-model",
+        provider=provider,
+        strategy="plan_execute",
+        enable_tracing=True,
+        event_handlers=[events.append],
+    ))
+
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    agent.add_tools([add])
+    result = await agent.run("Calculate")
+
+    assert result.content == "Final answer"
+    event_types = [event.type for event in events]
+    assert event_types.index("step_start") < event_types.index("tool_start")
+    assert event_types.index("tool_end") < event_types.index("step_end")
 
 
 @pytest.mark.asyncio

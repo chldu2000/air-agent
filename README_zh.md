@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-轻量级 Python AI Agent 库。默认使用 OpenAI Provider，同时支持自定义 LLM Provider；内置工具调用循环、文件/Shell 工具、MCP Server 连接、Skills、并行 Subagent、Tracing 和流式输出。设计为可被其他 Python 项目直接引用。
+轻量级 Python AI Agent 库。默认使用 OpenAI Provider，同时支持自定义 LLM Provider；支持默认 ReAct 与可选 Plan-and-Execute 策略，内置工具调用循环、文件/Shell 工具、MCP Server 连接、Skills、并行 Subagent、Tracing 和流式输出。设计为可被其他 Python 项目直接引用。
 
 ## 安装
 
@@ -69,7 +69,30 @@ asyncio.run(main())
 
 参数类型从函数签名自动推导，生成 OpenAI tool calling 所需的 JSON Schema。
 
-### 4. 流式输出
+### 4. 用 Plan-and-Execute 处理多步骤任务
+
+默认策略是 `react`。对于较大的任务，可以显式选择 v0.6 的非流式 Plan-and-Execute MVP：Agent 会先让当前 Provider 生成有上限的 JSON plan，再通过现有的工具调用循环逐步执行，最后汇总成面向用户的答案。
+
+```python
+import asyncio
+from air_agent import Agent, AgentConfig
+
+
+async def main():
+    agent = Agent(AgentConfig(model="gpt-4o", max_plan_steps=6))
+    response = await agent.run(
+        "检查这个项目，并给出接下来三个改进建议",
+        strategy="plan_execute",
+    )
+    print(response.content)
+
+
+asyncio.run(main())
+```
+
+Plan-and-Execute 在 v0.6 中需要显式开启，并且不支持 `stream=True`。
+
+### 5. 流式输出
 
 ```python
 import asyncio
@@ -93,7 +116,7 @@ async def main():
 asyncio.run(main())
 ```
 
-### 5. 保留多轮对话上下文
+### 6. 保留多轮对话上下文
 
 多轮对话传入相同的 `conversation_id` 即可。air-agent 会为该 id 保留最近的对话历史。
 
@@ -115,7 +138,7 @@ async def main():
 asyncio.run(main())
 ```
 
-### 6. 使用可选 Memory
+### 7. 使用可选 Memory
 
 Memory 默认关闭。需要同时挂载 memory store，并设置 `memory_enabled=True` 才会启用。检索到的 memory 会作为单独的 system message 注入，并标记为上下文笔记；它不会被当作用户指令。
 
@@ -148,7 +171,7 @@ asyncio.run(main())
 
 如果需要跨进程持久化，可以把 `InMemoryMemoryStore()` 换成 `FileMemoryStore("memory.json")`。Memory record 支持 `fact`、`summary` 和 `task_state` 三种 kind。
 
-### 7. 使用 Tracing 观察运行过程
+### 8. 使用 Tracing 观察运行过程
 
 Tracing 默认关闭。启用后，Agent 会为 LLM 调用、工具调用、重试、Skill 路由、错误和完成状态输出结构化 `RunEvent` 记录。
 
@@ -186,6 +209,8 @@ for event in failed_tools:
 ```
 
 常用事件类型包括 `llm_start`、`llm_end`、`tool_start`、`tool_end`、`tool_error`、`retry` 和 `done`。工具错误会包含 `error_kind`，例如 `invalid_arguments`、`tool_not_found`、`timeout`、`permission_denied` 或 `tool_error`。
+
+Plan-and-Execute tracing 还会输出 `plan_created`、`step_start`、`step_end`、`step_error` 和 `plan_revised`。Step 事件会把 step id 放在 `name` 中，并在 metadata 里包含 `step_index`、依赖、step 状态和 plan 状态等信息。
 
 Skills tracing 还会输出：
 
@@ -241,6 +266,8 @@ agent = Agent(config)
 | `AIR_PROVIDER` | str | Provider 名称（支持 `openai`；不设置也使用 OpenAI） |
 | `AIR_SYSTEM_PROMPT` | str | 系统提示词 |
 | `AIR_MAX_ITERATIONS` | int | 最大工具调用轮次 |
+| `AIR_STRATEGY` | str | Agent 策略：`react` 或 `plan_execute` |
+| `AIR_MAX_PLAN_STEPS` | int | Plan-and-Execute 生成 plan 的最大 step 数 |
 | `AIR_TOOL_TIMEOUT` | float | 工具调用超时（秒） |
 | `AIR_MCP_SERVERS` | JSON | MCP server 列表 |
 | `AIR_DEFAULT_HEADERS` | JSON | 自定义请求头 |
@@ -493,6 +520,9 @@ AgentConfig(
     memory_search_limit=5,        # 每次运行最多检索的 memory record 数
     memory_max_chars=4000,        # memory 上下文最大字符数
     memory_summary_threshold=12,  # 触发 summary memory 的对话轮次阈值
+    strategy="react",             # "react" 或 "plan_execute"
+    planner=None,                  # Planner 对象；仅支持程序化传入
+    max_plan_steps=8,              # Plan-and-Execute step 上限
     max_iterations=20,           # 工具调用最大轮次
     tool_timeout=30.0,           # 单次工具调用超时（秒）
     mcp_servers=[],              # MCP server 列表
@@ -512,6 +542,7 @@ src/air_agent/
 ├── agent.py             # 核心 Agent（ReAct 循环 + 流式输出）
 ├── config.py            # 配置数据类
 ├── memory.py            # MemoryRecord、MemoryStore 与 memory store 实现
+├── planner.py           # Planner 协议、LLMPlanner、Plan、PlanStep、StepResult
 ├── providers/
 │   ├── types.py         # LLMProvider 协议 + 中立响应类型
 │   └── openai.py        # 默认 OpenAI provider adapter

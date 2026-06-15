@@ -2,7 +2,7 @@
 
 [中文文档](README_zh.md)
 
-A lightweight Python AI Agent library with OpenAI as the default provider, plus custom LLM provider support. It includes tool-calling loops, built-in file/shell tools, MCP server connections, skills, parallel subagents, tracing, and streaming output. Designed to be imported directly by other Python projects.
+A lightweight Python AI Agent library with OpenAI as the default provider, plus custom LLM provider support. It includes ReAct and opt-in Plan-and-Execute strategies, tool-calling loops, built-in file/shell tools, MCP server connections, skills, parallel subagents, tracing, and streaming output. Designed to be imported directly by other Python projects.
 
 ## Installation
 
@@ -69,7 +69,30 @@ asyncio.run(main())
 
 Parameter types are inferred from the function signature and converted to the JSON Schema required by OpenAI tool calling.
 
-### 4. Stream Output
+### 4. Use Plan-and-Execute for Multi-Step Tasks
+
+The default strategy is `react`. For larger tasks, opt into the non-streaming Plan-and-Execute MVP with `strategy="plan_execute"`. The agent asks the configured provider for a bounded JSON plan, executes steps through the existing tool-enabled loop, and synthesizes a final answer.
+
+```python
+import asyncio
+from air_agent import Agent, AgentConfig
+
+
+async def main():
+    agent = Agent(AgentConfig(model="gpt-4o", max_plan_steps=6))
+    response = await agent.run(
+        "Inspect this project and suggest the next three improvements",
+        strategy="plan_execute",
+    )
+    print(response.content)
+
+
+asyncio.run(main())
+```
+
+Plan-and-Execute is opt-in in v0.6 and does not support `stream=True`.
+
+### 5. Stream Output
 
 ```python
 import asyncio
@@ -93,7 +116,7 @@ async def main():
 asyncio.run(main())
 ```
 
-### 5. Keep Conversation Context
+### 6. Keep Conversation Context
 
 Pass the same `conversation_id` across turns. air-agent keeps the recent conversation history for that id.
 
@@ -115,7 +138,7 @@ async def main():
 asyncio.run(main())
 ```
 
-### 6. Use Opt-In Memory
+### 7. Use Opt-In Memory
 
 Memory is disabled by default. To use it, attach a memory store and set `memory_enabled=True`. Retrieved memory is injected as a separate system message with contextual notes; it is not treated as user instructions.
 
@@ -148,7 +171,7 @@ asyncio.run(main())
 
 Use `FileMemoryStore("memory.json")` instead of `InMemoryMemoryStore()` when you want persistence across processes. Memory records can use the `fact`, `summary`, or `task_state` kinds.
 
-### 7. Observe Runs with Tracing
+### 8. Observe Runs with Tracing
 
 Tracing is opt-in. When enabled, the agent emits structured `RunEvent` records for LLM calls, tool calls, retries, skill routing, errors, and completion.
 
@@ -186,6 +209,8 @@ for event in failed_tools:
 ```
 
 Useful event types include `llm_start`, `llm_end`, `tool_start`, `tool_end`, `tool_error`, `retry`, and `done`. Tool errors include an `error_kind` such as `invalid_arguments`, `tool_not_found`, `timeout`, `permission_denied`, or `tool_error`.
+
+Plan-and-Execute tracing adds `plan_created`, `step_start`, `step_end`, `step_error`, and `plan_revised`. Step events include the step id in `name` plus metadata such as `step_index`, dependencies, step status, and plan status.
 
 Skills tracing adds:
 
@@ -241,6 +266,8 @@ Supported environment variables:
 | `AIR_PROVIDER` | str | Provider name (`openai`; unset also uses OpenAI) |
 | `AIR_SYSTEM_PROMPT` | str | System prompt |
 | `AIR_MAX_ITERATIONS` | int | Max tool-calling rounds |
+| `AIR_STRATEGY` | str | Agent strategy: `react` or `plan_execute` |
+| `AIR_MAX_PLAN_STEPS` | int | Maximum generated plan steps for Plan-and-Execute |
 | `AIR_TOOL_TIMEOUT` | float | Tool call timeout in seconds |
 | `AIR_MCP_SERVERS` | JSON | MCP server list |
 | `AIR_DEFAULT_HEADERS` | JSON | Custom request headers |
@@ -492,6 +519,9 @@ AgentConfig(
     memory_search_limit=5,        # Max memory records retrieved per run
     memory_max_chars=4000,        # Max memory context characters
     memory_summary_threshold=12,  # Turns before summary memory is considered
+    strategy="react",             # "react" or "plan_execute"
+    planner=None,                  # Planner object; programmatic only
+    max_plan_steps=8,              # Plan-and-Execute step cap
     max_iterations=20,           # Max tool-calling rounds
     tool_timeout=30.0,           # Single tool call timeout (seconds)
     mcp_servers=[],              # MCP server list
@@ -511,6 +541,7 @@ src/air_agent/
 ├── agent.py             # Core Agent (ReAct loop + streaming)
 ├── config.py            # Configuration dataclass
 ├── memory.py            # MemoryRecord, MemoryStore, and memory store implementations
+├── planner.py           # Planner protocol, LLMPlanner, Plan, PlanStep, StepResult
 ├── providers/
 │   ├── types.py         # LLMProvider protocol + neutral response types
 │   └── openai.py        # Default OpenAI provider adapter

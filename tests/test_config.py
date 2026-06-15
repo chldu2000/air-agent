@@ -81,6 +81,69 @@ class TestMemoryConfig:
         assert config.memory_summary_threshold == 10
 
 
+class TestPlanExecuteConfig:
+    def test_planner_defaults_use_react(self):
+        config = AgentConfig()
+
+        assert config.strategy == "react"
+        assert config.planner is None
+        assert config.max_plan_steps == 8
+
+    def test_programmatic_planner_is_preserved_by_identity(self):
+        planner = object()
+        config = AgentConfig(planner=planner, strategy="plan_execute")
+
+        assert config.planner is planner
+        assert config.strategy == "plan_execute"
+
+    def test_positional_constructor_order_still_preserves_existing_fields(self):
+        config = AgentConfig("m", "k", "b", "sys")
+
+        assert config.model == "m"
+        assert config.api_key == "k"
+        assert config.base_url == "b"
+        assert config.system_prompt == "sys"
+        assert config.strategy == "react"
+
+    def test_strategy_fields_from_json(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "strategy": "plan_execute",
+            "max_plan_steps": 4,
+        }))
+
+        config = AgentConfig.from_json(str(config_file))
+
+        assert config.strategy == "plan_execute"
+        assert config.max_plan_steps == 4
+
+    def test_non_null_planner_from_json_is_rejected(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "planner": {"type": "llm"},
+        }))
+
+        with pytest.raises(ValueError, match="planner must be configured programmatically"):
+            AgentConfig.from_json(str(config_file))
+
+    def test_strategy_fields_from_env(self, monkeypatch):
+        monkeypatch.setenv("AIR_STRATEGY", "plan_execute")
+        monkeypatch.setenv("AIR_MAX_PLAN_STEPS", "3")
+
+        config = AgentConfig.from_env()
+
+        assert config.strategy == "plan_execute"
+        assert config.max_plan_steps == 3
+
+    def test_invalid_strategy_is_rejected(self):
+        with pytest.raises(ValueError, match="strategy must be one of"):
+            AgentConfig(strategy="chain_of_thought")
+
+    def test_invalid_max_plan_steps_is_rejected(self):
+        with pytest.raises(ValueError, match="max_plan_steps must be greater than 0"):
+            AgentConfig(max_plan_steps=0)
+
+
 class TestFromJson:
     def test_basic_fields(self, tmp_path):
         config_file = tmp_path / "config.json"
