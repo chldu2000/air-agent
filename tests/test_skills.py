@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from air_agent import SkillRouteResult
-from air_agent.providers import LLMResponse
+from air_agent.providers import LLMResponse, LLMStreamChunk, LLMStreamToolCallDelta, LLMToolCall
 from air_agent.skills.manager import SkillManager
 from air_agent.skills import SkillRouteResult as SkillsSkillRouteResult
 from air_agent.skills.router import LLMSkillRouter, SkillRouter
@@ -209,6 +209,80 @@ class TestSkillManager:
         manager.load()
 
         assert len(manager.skills) == 0
+
+    def test_list_attachments_excludes_skill_md_and_hidden_files(self, tmp_path: Path):
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        skill_dir = self._create_skill(skills_dir, "debugging", "Use when bugs", "Inspect.")
+        (skill_dir / "references").mkdir()
+        (skill_dir / "references" / "notes.md").write_text("notes")
+        (skill_dir / "scripts").mkdir()
+        (skill_dir / "scripts" / "helper.py").write_text("print('hi')")
+        (skill_dir / ".secret").write_text("hidden")
+
+        manager = SkillManager(skills_dir)
+        manager.load()
+        skill = manager.get_skill("debugging")
+        assert skill is not None
+
+        result = manager.list_attachments(skill)
+
+        assert result["truncated"] is False
+        assert result["count"] == 2
+        assert result["attachments"] == [
+            {"path": "references/notes.md", "type": "file", "size": 5},
+            {"path": "scripts/helper.py", "type": "file", "size": 11},
+        ]
+
+    def test_list_attachments_truncates_to_limit(self, tmp_path: Path):
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        skill_dir = self._create_skill(skills_dir, "debugging", "Use when bugs", "Inspect.")
+        for index in range(3):
+            (skill_dir / f"file_{index}.txt").write_text(str(index))
+
+        manager = SkillManager(skills_dir)
+        manager.load()
+        skill = manager.get_skill("debugging")
+        assert skill is not None
+
+        result = manager.list_attachments(skill, max_entries=2)
+
+        assert result["truncated"] is True
+        assert result["count"] == 3
+        assert len(result["attachments"]) == 2
+
+    def test_render_skill_payload_returns_content_and_attachments(self, tmp_path: Path):
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        skill_dir = self._create_skill(skills_dir, "debugging", "Use when bugs", "Inspect the failure.")
+        (skill_dir / "references").mkdir()
+        (skill_dir / "references" / "guide.md").write_text("guide")
+
+        manager = SkillManager(skills_dir)
+        manager.load()
+
+        payload = manager.render_skill_payload("debugging", description="Need debugging help")
+
+        assert "# Skill: debugging" in payload
+        assert "Description: Use when bugs" in payload
+        assert f"Path: {skill_dir}" in payload
+        assert "Requested context: Need debugging help" in payload
+        assert "Inspect the failure." in payload
+        assert "- references/guide.md (file, 5 bytes)" in payload
+
+    def test_render_skill_payload_for_missing_skill_lists_available_names(self, tmp_path: Path):
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        self._create_skill(skills_dir, "debugging", "Use when bugs")
+
+        manager = SkillManager(skills_dir)
+        manager.load()
+
+        payload = manager.render_skill_payload("missing")
+
+        assert "Skill not found: missing" in payload
+        assert "Available skills: debugging" in payload
 
 
 class TestLLMSkillRouter:
@@ -686,6 +760,7 @@ class TestAgentSkillsIntegration:
 
         assert agent._skill_manager is not None
         assert len(agent._skill_manager.skills) == 1
+        assert agent._registry.has_tool("use_skill")
 
     def test_agent_without_skills_dir_has_no_manager(self):
         config = AgentConfig(model="gpt-4o", api_key="test-key")
@@ -716,26 +791,22 @@ class TestAgentSkillsIntegration:
         )
 
         with patch.object(agent._client.chat.completions, "create", new_callable=AsyncMock) as mock_create:
-            # First call: skill routing; second call: actual response
-            routing_response = MagicMock()
-            routing_response.choices = [MagicMock()]
-            routing_response.choices[0].message.content = "none"
-            mock_create.side_effect = [routing_response, mock_response]
-
+            mock_create.return_value = mock_response
             result = await agent.run("hello")
 
-        # The second call (actual response) should contain skill metadata in messages
-        actual_call = mock_create.call_args_list[1]
+        assert result.content == "done"
+        actual_call = mock_create.call_args
         messages = actual_call.kwargs["messages"]
         system_msg = messages[0]["content"]
         assert "brainstorming" in system_msg
         assert "Use when creating" in system_msg
+        assert mock_create.call_count == 1
 
     @pytest.mark.asyncio
-    async def test_skill_path_injected_into_context(self, tmp_path: Path):
+    async def test_skill_content_is_not_automatically_injected(self, tmp_path: Path):
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
-        skill_dir = self._create_skill(skills_dir, "test-skill", "Use when testing", "Do the thing.")
+        self._create_skill(skills_dir, "test-skill", "Use when testing", "Do the thing.")
 
         config = AgentConfig(
             model="gpt-4o",
@@ -753,36 +824,27 @@ class TestAgentSkillsIntegration:
         )
 
         with patch.object(agent._client.chat.completions, "create", new_callable=AsyncMock) as mock_create:
-            routing_response = MagicMock()
-            routing_response.choices = [MagicMock()]
-            routing_response.choices[0].message.content = "test-skill"
-            mock_create.side_effect = [routing_response, mock_response]
+            mock_create.return_value = mock_response
 
             await agent.run("test")
 
-        # Matched skill should include path attribute
-        actual_call = mock_create.call_args_list[1]
+        actual_call = mock_create.call_args
         messages = actual_call.kwargs["messages"]
-        skill_msgs = [m for m in messages if "skill name" in m.get("content", "")]
-        assert len(skill_msgs) >= 1
-        assert f'path="{skill_dir}"' in skill_msgs[0]["content"]
+        assert not any("Do the thing." in m.get("content", "") for m in messages)
+        assert not any("<skill name=" in m.get("content", "") for m in messages)
 
     @pytest.mark.asyncio
-    async def test_skill_routing_emits_events_and_injects_in_current_order(self, tmp_path: Path):
+    async def test_use_skill_tool_returns_payload_and_emits_events(self, tmp_path: Path):
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
-        brainstorming_dir = self._create_skill(
-            skills_dir,
-            "brainstorming",
-            "Use when creating",
-            "Ask questions one at a time.",
-        )
         debugging_dir = self._create_skill(
             skills_dir,
             "debugging",
             "Use when bugs",
             "Inspect the failure.",
         )
+        (debugging_dir / "references").mkdir()
+        (debugging_dir / "references" / "guide.md").write_text("guide")
         trace_events = []
         config = AgentConfig(
             model="gpt-4o",
@@ -793,67 +855,59 @@ class TestAgentSkillsIntegration:
         )
         agent = Agent(config)
 
-        routing_response = MagicMock()
-        routing_response.choices = [MagicMock()]
-        routing_response.choices[0].message.content = "brainstorming, debugging, unknown"
+        tool_call = MagicMock()
+        tool_call.id = "tc_1"
+        tool_call.function.name = "use_skill"
+        tool_call.function.arguments = '{"name": "debugging", "description": "Need help"}'
+        first_response = MagicMock()
+        first_response.choices = [MagicMock()]
+        first_response.choices[0].message.content = None
+        first_response.choices[0].message.tool_calls = [tool_call]
+        first_response.usage = None
         final_response = MagicMock()
         final_response.choices = [MagicMock()]
-        final_response.choices[0].message.content = "done"
+        final_response.choices[0].message.content = "used skill"
         final_response.choices[0].message.tool_calls = None
         final_response.usage = None
 
         with patch.object(agent._client.chat.completions, "create", new_callable=AsyncMock) as mock_create:
-            mock_create.side_effect = [routing_response, final_response]
-            result = await agent.run("create something", conversation_id="conv_1")
+            mock_create.side_effect = [first_response, final_response]
+            result = await agent.run("fix it", conversation_id="conv_1")
 
-        assert result.content == "done"
+        assert result.content == "used skill"
         assert [event.type for event in trace_events] == [
-            "skill_route_start",
-            "skill_route_end",
-            "skill_injected",
-            "skill_injected",
+            "llm_start",
+            "llm_end",
+            "tool_start",
+            "skill_used",
+            "tool_end",
             "llm_start",
             "llm_end",
             "done",
         ]
-        route_start, route_end = trace_events[:2]
-        injected_events = trace_events[2:4]
-        assert route_start.conversation_id == "conv_1"
-        assert route_start.metadata == {
-            "candidate_names": ["brainstorming", "debugging"],
-            "candidate_count": 2,
-            "router": "LLMSkillRouter",
-        }
-        assert route_end.content == "brainstorming, debugging, unknown"
-        assert route_end.duration_ms is not None
-        assert route_end.metadata == {
-            "matched_names": ["brainstorming", "debugging"],
-            "unrecognized_names": ["unknown"],
-        }
-        assert [event.name for event in injected_events] == ["brainstorming", "debugging"]
-        assert injected_events[0].metadata == {
-            "path": str(brainstorming_dir),
-            "content_length": len("Ask questions one at a time."),
-        }
-        assert injected_events[1].metadata == {
+        skill_event = trace_events[3]
+        assert skill_event.conversation_id == "conv_1"
+        assert skill_event.name == "debugging"
+        assert skill_event.metadata == {
+            "skill_name": "debugging",
             "path": str(debugging_dir),
             "content_length": len("Inspect the failure."),
+            "attachment_count": 1,
+            "truncated": False,
         }
 
-        actual_call = mock_create.call_args_list[1]
-        messages = actual_call.kwargs["messages"]
-        injected_skill_messages = [
-            message["content"]
-            for message in messages[:2]
-            if message["role"] == "system" and "skill name" in message.get("content", "")
-        ]
-        assert injected_skill_messages == [
-            f'<skill name="debugging" path="{debugging_dir}">\nInspect the failure.\n</skill>',
-            f'<skill name="brainstorming" path="{brainstorming_dir}">\nAsk questions one at a time.\n</skill>',
-        ]
+        tools = mock_create.call_args_list[0].kwargs["tools"]
+        tool_names = [tool["function"]["name"] for tool in tools]
+        assert "use_skill" in tool_names
+        second_messages = mock_create.call_args_list[1].kwargs["messages"]
+        tool_messages = [message for message in second_messages if message["role"] == "tool"]
+        assert len(tool_messages) == 1
+        assert "# Skill: debugging" in tool_messages[0]["content"]
+        assert "Inspect the failure." in tool_messages[0]["content"]
+        assert "- references/guide.md (file, 5 bytes)" in tool_messages[0]["content"]
 
     @pytest.mark.asyncio
-    async def test_skill_routing_error_emits_event_and_falls_back(self, tmp_path: Path):
+    async def test_use_skill_missing_skill_returns_tool_result_without_error_event(self, tmp_path: Path):
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
         self._create_skill(skills_dir, "debugging", "Use when bugs")
@@ -867,34 +921,35 @@ class TestAgentSkillsIntegration:
         )
         agent = Agent(config)
 
+        tool_call = MagicMock()
+        tool_call.id = "tc_1"
+        tool_call.function.name = "use_skill"
+        tool_call.function.arguments = '{"name": "missing"}'
+        first_response = MagicMock()
+        first_response.choices = [MagicMock()]
+        first_response.choices[0].message.content = None
+        first_response.choices[0].message.tool_calls = [tool_call]
+        first_response.usage = None
         final_response = MagicMock()
         final_response.choices = [MagicMock()]
-        final_response.choices[0].message.content = "fallback response"
+        final_response.choices[0].message.content = "handled"
         final_response.choices[0].message.tool_calls = None
         final_response.usage = None
 
         with patch.object(agent._client.chat.completions, "create", new_callable=AsyncMock) as mock_create:
-            mock_create.side_effect = [RuntimeError("API unavailable"), final_response]
+            mock_create.side_effect = [first_response, final_response]
             result = await agent.run("fix it")
 
-        assert result.content == "fallback response"
-        assert [event.type for event in trace_events] == [
-            "skill_route_start",
-            "skill_route_error",
-            "llm_start",
-            "llm_end",
-            "done",
-        ]
-        route_error = trace_events[1]
-        assert route_error.content == "API unavailable"
-        assert route_error.duration_ms is not None
-        assert route_error.metadata == {
-            "error_type": "RuntimeError",
-            "fallback": "no_skills",
-        }
+        assert result.content == "handled"
+        assert "skill_used" not in [event.type for event in trace_events]
+        assert "tool_error" not in [event.type for event in trace_events]
+        second_messages = mock_create.call_args_list[1].kwargs["messages"]
+        tool_message = [message for message in second_messages if message["role"] == "tool"][0]
+        assert "Skill not found: missing" in tool_message["content"]
+        assert "Available skills: debugging" in tool_message["content"]
 
     @pytest.mark.asyncio
-    async def test_no_skill_match_emits_route_end_without_injection(self, tmp_path: Path):
+    async def test_no_skill_route_events_are_emitted_by_default(self, tmp_path: Path):
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
         self._create_skill(skills_dir, "debugging", "Use when bugs")
@@ -908,9 +963,6 @@ class TestAgentSkillsIntegration:
         )
         agent = Agent(config)
 
-        routing_response = MagicMock()
-        routing_response.choices = [MagicMock()]
-        routing_response.choices[0].message.content = "none"
         final_response = MagicMock()
         final_response.choices = [MagicMock()]
         final_response.choices[0].message.content = "done"
@@ -918,14 +970,13 @@ class TestAgentSkillsIntegration:
         final_response.usage = None
 
         with patch.object(agent._client.chat.completions, "create", new_callable=AsyncMock) as mock_create:
-            mock_create.side_effect = [routing_response, final_response]
+            mock_create.return_value = final_response
             await agent.run("hello")
 
-        assert [event.type for event in trace_events[:2]] == [
-            "skill_route_start",
-            "skill_route_end",
-        ]
-        assert not any(event.type == "skill_injected" for event in trace_events)
+        assert "skill_route_start" not in [event.type for event in trace_events]
+        assert "skill_route_end" not in [event.type for event in trace_events]
+        assert "skill_injected" not in [event.type for event in trace_events]
+        mock_create.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_skills_events_are_not_dispatched_when_tracing_disabled(self, tmp_path: Path):
@@ -942,9 +993,6 @@ class TestAgentSkillsIntegration:
         )
         agent = Agent(config)
 
-        routing_response = MagicMock()
-        routing_response.choices = [MagicMock()]
-        routing_response.choices[0].message.content = "debugging"
         final_response = MagicMock()
         final_response.choices = [MagicMock()]
         final_response.choices[0].message.content = "done"
@@ -952,7 +1000,7 @@ class TestAgentSkillsIntegration:
         final_response.usage = None
 
         with patch.object(agent._client.chat.completions, "create", new_callable=AsyncMock) as mock_create:
-            mock_create.side_effect = [routing_response, final_response]
+            mock_create.return_value = final_response
             result = await agent.run("fix it")
 
         assert result.content == "done"
@@ -968,88 +1016,104 @@ class TestStreamingWithSkills:
         )
         return skill_dir
 
+    class FakeStreamingProvider:
+        supports_tools = True
+        supports_streaming = True
+
+        def __init__(self, streams: list[list[LLMStreamChunk]]):
+            self.streams = list(streams)
+            self.calls = []
+
+        async def complete(self, **kwargs):
+            raise AssertionError("complete should not be called in streaming skill test")
+
+        async def stream(self, **kwargs):
+            self.calls.append(
+                {
+                    **kwargs,
+                    "messages": [dict(message) for message in kwargs["messages"]],
+                    "tools": list(kwargs["tools"]) if kwargs.get("tools") else None,
+                }
+            )
+            chunks = self.streams.pop(0)
+            for chunk in chunks:
+                yield chunk
+
     @pytest.mark.asyncio
-    async def test_streaming_injects_matched_skills(self, tmp_path: Path):
+    async def test_streaming_can_use_skill_as_regular_tool(self, tmp_path: Path):
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
-        self._create_skill(
+        skill_dir = self._create_skill(
             skills_dir, "brainstorming",
             "Use when creating",
             "Ask questions one at a time.",
         )
+        (skill_dir / "references").mkdir()
+        (skill_dir / "references" / "guide.md").write_text("guide")
 
         events = []
+        provider = self.FakeStreamingProvider([
+            [
+                LLMStreamChunk(
+                    tool_call_deltas=[
+                        LLMStreamToolCallDelta(
+                            index=0,
+                            id="tc_1",
+                            name="use_skill",
+                            arguments='{"name":"brainstorming"}',
+                        )
+                    ]
+                )
+            ],
+            [LLMStreamChunk(content_delta="Used it.")],
+        ])
         config = AgentConfig(
             model="gpt-4o",
-            api_key="test-key",
+            provider=provider,
             skills_dir=str(skills_dir),
             enable_tracing=True,
             event_handlers=[events.append],
         )
         agent = Agent(config)
 
-        # Mock the routing call (first call) to return brainstorming
-        routing_response = MagicMock()
-        routing_response.choices = [MagicMock()]
-        routing_response.choices[0].message.content = "brainstorming"
+        stream = await agent.run("I want to brainstorm", stream=True)
+        stream_events = []
+        async for event in stream:
+            stream_events.append(event)
 
-        # Mock the streaming response (second call)
-        stream_event_1 = MagicMock()
-        stream_event_1.choices = [MagicMock()]
-        stream_event_1.choices[0].delta.content = "Hello"
-        stream_event_1.choices[0].delta.tool_calls = None
-        stream_event_1.usage = None
-
-        stream_event_2 = MagicMock()
-        stream_event_2.choices = [MagicMock()]
-        stream_event_2.choices[0].delta.content = None
-        stream_event_2.choices[0].delta.tool_calls = None
-        stream_event_2.usage = MagicMock(prompt_tokens=5, completion_tokens=10, total_tokens=15)
-
-        async def mock_stream():
-            yield stream_event_1
-            yield stream_event_2
-
-        with patch.object(agent._client.chat.completions, "create", new_callable=AsyncMock) as mock_create:
-            mock_create.side_effect = [routing_response, mock_stream()]
-            stream = await agent.run("I want to brainstorm", stream=True)
-            stream_events = []
-            async for event in stream:
-                stream_events.append(event)
-
-        assert [event.type for event in events[:3]] == [
-            "skill_route_start",
-            "skill_route_end",
-            "skill_injected",
+        assert [event.type for event in events] == [
+            "llm_start",
+            "llm_end",
+            "tool_start",
+            "skill_used",
+            "tool_end",
+            "llm_start",
+            "llm_end",
+            "done",
         ]
-        route_start, route_end, injected = events[:3]
-        assert route_start.metadata == {
-            "candidate_names": ["brainstorming"],
-            "candidate_count": 1,
-            "router": "LLMSkillRouter",
-        }
-        assert route_end.content == "brainstorming"
-        assert route_end.metadata == {
-            "matched_names": ["brainstorming"],
-            "unrecognized_names": [],
-        }
-        assert injected.name == "brainstorming"
-        assert injected.metadata == {
+        skill_event = events[3]
+        assert skill_event.name == "brainstorming"
+        assert skill_event.metadata == {
+            "skill_name": "brainstorming",
             "path": str(skills_dir / "brainstorming"),
             "content_length": len("Ask questions one at a time."),
+            "attachment_count": 1,
+            "truncated": False,
         }
-        assert [event.type for event in stream_events] == ["text", "done"]
+        assert [event.type for event in stream_events] == ["tool_call", "tool_result", "text", "done"]
+        assert stream_events[1].name == "use_skill"
+        assert "# Skill: brainstorming" in stream_events[1].content
+        assert "- references/guide.md (file, 5 bytes)" in stream_events[1].content
 
-        # Verify routing happened
-        assert mock_create.call_count == 2
-        # The streaming call should have skill content in its messages
-        streaming_call = mock_create.call_args_list[1]
-        messages = streaming_call.kwargs["messages"]
-        system_msgs = [m for m in messages if m["role"] == "system"]
-        assert any("brainstorming" in m["content"] for m in system_msgs)
+        assert len(provider.calls) == 2
+        assert "use_skill" in [tool["function"]["name"] for tool in provider.calls[0]["tools"]]
+        assert not any("Ask questions one at a time." in m.get("content", "") for m in provider.calls[0]["messages"])
+        tool_messages = [m for m in provider.calls[1]["messages"] if m["role"] == "tool"]
+        assert len(tool_messages) == 1
+        assert "Ask questions one at a time." in tool_messages[0]["content"]
 
     @pytest.mark.asyncio
-    async def test_streaming_skill_routing_error_falls_back_without_skills(self, tmp_path: Path):
+    async def test_streaming_does_not_route_skills_before_first_stream_call(self, tmp_path: Path):
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
         self._create_skill(
@@ -1059,166 +1123,27 @@ class TestStreamingWithSkills:
         )
 
         events = []
+        provider = self.FakeStreamingProvider([
+            [LLMStreamChunk(content_delta="Recovered")]
+        ])
         config = AgentConfig(
             model="gpt-4o",
-            api_key="test-key",
+            provider=provider,
             skills_dir=str(skills_dir),
             enable_tracing=True,
             event_handlers=[events.append],
         )
         agent = Agent(config)
 
-        stream_event = MagicMock()
-        stream_event.choices = [MagicMock()]
-        stream_event.choices[0].delta.content = "Recovered"
-        stream_event.choices[0].delta.tool_calls = None
-        stream_event.usage = MagicMock(prompt_tokens=3, completion_tokens=4, total_tokens=7)
-
-        async def mock_stream():
-            yield stream_event
-
-        with patch.object(agent._client.chat.completions, "create", new_callable=AsyncMock) as mock_create:
-            mock_create.side_effect = [RuntimeError("API unavailable"), mock_stream()]
-            stream = await agent.run("fix it", stream=True)
-            stream_events = []
-            async for event in stream:
-                stream_events.append(event)
+        stream = await agent.run("fix it", stream=True)
+        stream_events = []
+        async for event in stream:
+            stream_events.append(event)
 
         assert [event.type for event in events] == [
-            "skill_route_start",
-            "skill_route_error",
             "llm_start",
             "llm_end",
             "done",
         ]
-        assert events[0].metadata == {
-            "candidate_names": ["debugging"],
-            "candidate_count": 1,
-            "router": "LLMSkillRouter",
-        }
-        assert events[1].content == "API unavailable"
-        assert events[1].metadata == {
-            "error_type": "RuntimeError",
-            "fallback": "no_skills",
-        }
         assert [event.type for event in stream_events] == ["text", "done"]
-
-    @pytest.mark.asyncio
-    async def test_run_falls_back_when_custom_route_implementation_raises(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ):
-        skills_dir = tmp_path / "skills"
-        skills_dir.mkdir()
-        self._create_skill(skills_dir, "debugging", "Use when bugs", "Inspect the failure.")
-
-        events = []
-        config = AgentConfig(
-            model="gpt-4o",
-            api_key="test-key",
-            skills_dir=str(skills_dir),
-            enable_tracing=True,
-            event_handlers=[events.append],
-        )
-        agent = Agent(config)
-
-        class RaisingRouteRouter(SkillRouter):
-            async def match(self, user_input: str, skills: list[Skill]) -> list[Skill]:
-                return []
-
-            async def route(self, user_input: str, skills: list[Skill]) -> SkillRouteResult:
-                raise RuntimeError("route boom")
-
-        agent._skill_router = RaisingRouteRouter()
-
-        final_response = MagicMock()
-        final_response.choices = [MagicMock()]
-        final_response.choices[0].message.content = "fallback response"
-        final_response.choices[0].message.tool_calls = None
-        final_response.usage = None
-
-        with caplog.at_level("WARNING"):
-            with patch.object(agent._client.chat.completions, "create", new_callable=AsyncMock) as mock_create:
-                mock_create.return_value = final_response
-                result = await agent.run("fix it")
-
-        assert result.content == "fallback response"
-        assert [event.type for event in events] == [
-            "skill_route_start",
-            "skill_route_error",
-            "llm_start",
-            "llm_end",
-            "done",
-        ]
-        assert events[1].content == "route boom"
-        assert events[1].duration_ms is not None
-        assert events[1].duration_ms >= 0
-        assert events[1].metadata == {
-            "error_type": "RuntimeError",
-            "fallback": "no_skills",
-        }
-        assert any(record.levelname == "WARNING" for record in caplog.records)
-        create_messages = mock_create.call_args.kwargs["messages"]
-        assert not any("skill name" in message.get("content", "") for message in create_messages)
-
-    @pytest.mark.asyncio
-    async def test_streaming_falls_back_when_custom_route_implementation_raises(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ):
-        skills_dir = tmp_path / "skills"
-        skills_dir.mkdir()
-        self._create_skill(skills_dir, "debugging", "Use when bugs", "Inspect the failure.")
-
-        events = []
-        config = AgentConfig(
-            model="gpt-4o",
-            api_key="test-key",
-            skills_dir=str(skills_dir),
-            enable_tracing=True,
-            event_handlers=[events.append],
-        )
-        agent = Agent(config)
-
-        class RaisingRouteRouter(SkillRouter):
-            async def match(self, user_input: str, skills: list[Skill]) -> list[Skill]:
-                return []
-
-            async def route(self, user_input: str, skills: list[Skill]) -> SkillRouteResult:
-                raise RuntimeError("route boom")
-
-        agent._skill_router = RaisingRouteRouter()
-
-        stream_event = MagicMock()
-        stream_event.choices = [MagicMock()]
-        stream_event.choices[0].delta.content = "Recovered"
-        stream_event.choices[0].delta.tool_calls = None
-        stream_event.usage = MagicMock(prompt_tokens=3, completion_tokens=4, total_tokens=7)
-
-        async def mock_stream():
-            yield stream_event
-
-        with caplog.at_level("WARNING"):
-            with patch.object(agent._client.chat.completions, "create", new_callable=AsyncMock) as mock_create:
-                mock_create.return_value = mock_stream()
-                stream = await agent.run("fix it", stream=True)
-                stream_events = []
-                async for event in stream:
-                    stream_events.append(event)
-
-        assert [event.type for event in events] == [
-            "skill_route_start",
-            "skill_route_error",
-            "llm_start",
-            "llm_end",
-            "done",
-        ]
-        assert events[1].content == "route boom"
-        assert events[1].duration_ms is not None
-        assert events[1].duration_ms >= 0
-        assert events[1].metadata == {
-            "error_type": "RuntimeError",
-            "fallback": "no_skills",
-        }
-        assert [event.type for event in stream_events] == ["text", "done"]
-        assert any(record.levelname == "WARNING" for record in caplog.records)
-        create_messages = mock_create.call_args.kwargs["messages"]
-        assert not any("skill name" in message.get("content", "") for message in create_messages)
+        assert len(provider.calls) == 1

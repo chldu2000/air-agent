@@ -1,5 +1,6 @@
 import json
 import pytest
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from air_agent.agent import Agent
 from air_agent.config import AgentConfig
@@ -228,6 +229,54 @@ async def test_plan_execute_per_call_strategy_runs_llm_plan_steps_in_order():
     assert "Research" in provider.calls[1]["messages"][-1]["content"]
     assert "Summarize" in provider.calls[2]["messages"][-1]["content"]
     assert provider.calls[3]["tools"] is None
+
+
+@pytest.mark.asyncio
+async def test_plan_execute_step_can_use_skill_without_automatic_injection(tmp_path: Path):
+    skills_dir = tmp_path / "skills"
+    skill_dir = skills_dir / "debugging"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: debugging\n"
+        "description: Use when bugs\n"
+        "---\n"
+        "Inspect the failure.\n"
+    )
+    plan = Plan(goal="Fix it", steps=[PlanStep(id="step_1", description="Debug the issue")])
+    provider = FakeCompletionProvider([
+        LLMResponse(
+            content="",
+            tool_calls=[
+                LLMToolCall(
+                    id="tc_1",
+                    name="use_skill",
+                    arguments='{"name":"debugging"}',
+                )
+            ],
+        ),
+        LLMResponse(content="Step used skill"),
+        LLMResponse(content="Final answer"),
+    ])
+    agent = Agent(
+        AgentConfig(
+            model="fake-model",
+            provider=provider,
+            planner=StaticPlanner(plan),
+            skills_dir=str(skills_dir),
+        )
+    )
+
+    result = await agent.run("Fix it", strategy="plan_execute")
+
+    assert result.content == "Final answer"
+    assert len(provider.calls) == 3
+    assert "use_skill" in [tool["function"]["name"] for tool in provider.calls[0]["tools"]]
+    assert not any("Inspect the failure." in message.get("content", "") for message in provider.calls[0]["messages"])
+    tool_messages = [message for message in provider.calls[1]["messages"] if message["role"] == "tool"]
+    assert len(tool_messages) == 1
+    assert "Inspect the failure." in tool_messages[0]["content"]
+    assert provider.calls[2]["tools"] is None
 
 
 @pytest.mark.asyncio

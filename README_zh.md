@@ -173,7 +173,7 @@ asyncio.run(main())
 
 ### 8. 使用 Tracing 观察运行过程
 
-Tracing 默认关闭。启用后，Agent 会为 LLM 调用、工具调用、重试、Skill 路由、错误和完成状态输出结构化 `RunEvent` 记录。
+Tracing 默认关闭。启用后，Agent 会为 LLM 调用、工具调用、重试、显式 Skill 使用、错误和完成状态输出结构化 `RunEvent` 记录。
 
 ```python
 from air_agent import Agent, AgentConfig
@@ -212,14 +212,7 @@ for event in failed_tools:
 
 Plan-and-Execute tracing 还会输出 `plan_created`、`step_start`、`step_end`、`step_error` 和 `plan_revised`。Step 事件会把 step id 放在 `name` 中，并在 metadata 里包含 `step_index`、依赖、step 状态和 plan 状态等信息。
 
-Skills tracing 还会输出：
-
-- `skill_route_start`：包含 `metadata.candidate_names`、`metadata.candidate_count` 和 `metadata.router`
-- `skill_route_end`：`content` 保存路由器的原始输出，另含 `metadata.matched_names`、`metadata.unrecognized_names` 和 `duration_ms`
-- `skill_route_error`：`content` 为失败信息，另含 `metadata.error_type`、`metadata.fallback="no_skills"` 和 `duration_ms`
-- `skill_injected`：包含被注入 Skill 的 `name`、`metadata.path` 和 `metadata.content_length`
-
-`skill_route_end.content` 保存的是模型生成的完整 Router 输出，因此 tracing 日志可能包含敏感的提示词或路由数据；请相应配置日志、存储、访问权限和保留策略。
+Skills tracing 会在内置 `use_skill` 工具成功加载 Skill 时输出 `skill_used`。事件包含 skill 名称、路径、正文长度、附件数量和是否截断。`use_skill` 调用也会输出普通的 `tool_start` / `tool_end` 事件，因此 Skill 加载会和其他工具调用出现在同一条时间线上。
 
 ### 从 JSON 文件加载配置
 
@@ -384,21 +377,28 @@ agent = Agent(config)
 response = await agent.run("我想头脑风暴一个新功能")
 ```
 
-Skills 通过渐进式 Prompt 注入工作：
+Skills 通过显式工具加载工作：
 
-- 所有 Skill 元数据（名称 + 描述）始终包含在系统提示词中
-- 当用户查询匹配到相关 Skill 时，完整 Skill 内容会被注入到对话上下文中
-- Skill 匹配默认使用基于 LLM 的路由器；你可以提供自定义的 `SkillRouter` 实现
+- 所有 Skill 元数据（名称 + 描述）始终包含在系统提示词中。
+- 只要加载了 skills，Agent 就会自动获得 `use_skill` 工具。
+- 主 Agent 自行判断何时调用 `use_skill(name="...")`；完整 `SKILL.md` 正文和附件 manifest 会作为普通工具结果返回。
+- 附件 manifest 会列出 `scripts/`、`references/` 等随 Skill 打包的文件，包含相对路径、类型和大小，但不会内联附件文件正文。
 
-**自定义路由器：**
+示例工具结果形态：
 
-```python
-from air_agent import SkillRouter
+```text
+# Skill: brainstorming
+Description: 在进行创意工作或探索想法时使用
+Path: skills/brainstorming
 
-class KeywordRouter(SkillRouter):
-    async def match(self, user_input: str, skills: list) -> list:
-        return [s for s in skills if s.name in user_input.lower()]
+## Instructions
+每次只问一个问题来逐步细化想法。
+
+## Attachments
+None
 ```
+
+`SkillRouter`、`LLMSkillRouter` 和 `SkillRouteResult` 仍然会导出，供 legacy 或高级集成使用，但默认 `Agent` 不再自动执行 Skill 路由，也不会把完整 Skill 内容注入 system messages。
 
 ### 内置工具
 
@@ -657,7 +657,7 @@ src/air_agent/
 ├── skills/
 │   ├── skill.py         # Skill 数据类 + SKILL.md 解析器
 │   ├── manager.py       # SkillManager（目录扫描）
-│   └── router.py        # SkillRouter 抽象类 + LLMSkillRouter
+│   └── router.py        # legacy SkillRouter 抽象类 + LLMSkillRouter 导出
 └── subagent.py          # 并行 subagent 管理器
 ```
 

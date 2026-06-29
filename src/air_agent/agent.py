@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import logging
 import time
+from contextvars import ContextVar
 from types import SimpleNamespace
 from typing import Any, AsyncIterator, Callable, Literal
 from uuid import uuid4
@@ -17,13 +18,16 @@ from air_agent.providers import LLMToolCall, OpenAIProvider
 from air_agent.tools.builtin import register_builtin_tools
 from air_agent.tools.builtin.config import BuiltinToolsConfig
 from air_agent.skills.manager import SkillManager
-from air_agent.skills.router import LLMSkillRouter, SkillRouteResult
 from air_agent.subagent import delegate as _delegate
 from air_agent.tools.registry import ToolRegistry
 from air_agent.tracing import EventDispatcher
 from air_agent.types import AgentRole, Response, RunEvent, StreamEvent, SubagentAggregation, SubagentResult, TokenUsage
 
 logger = logging.getLogger(__name__)
+_tool_event_context: ContextVar[dict[str, Any] | None] = ContextVar(
+    "air_agent_tool_event_context",
+    default=None,
+)
 
 
 class Agent:
@@ -38,7 +42,6 @@ class Agent:
         self._mcp_clients: list[MCPClient] = []
         self._conversations: dict[str, list[dict[str, Any]]] = {}
         self._skill_manager: SkillManager | None = None
-        self._skill_router: LLMSkillRouter | None = None
         self._events = EventDispatcher(
             enabled=config.enable_tracing or config.log_events,
             handlers=config.event_handlers,
@@ -48,11 +51,53 @@ class Agent:
         if skills_dirs:
             self._skill_manager = SkillManager(skills_dirs)
             self._skill_manager.load()
-            self._skill_router = LLMSkillRouter(provider=self._provider, model=config.model)
+            if self._skill_manager.skills:
+                self._register_use_skill_tool()
         self._planner: Planner = config.planner or LLMPlanner(
             provider=self._provider,
             model=config.model,
             max_steps=config.max_plan_steps,
+        )
+
+    def _register_use_skill_tool(self) -> None:
+        if self._registry.has_tool("use_skill"):
+            raise ValueError("Tool already registered: use_skill")
+
+        async def use_skill(name: str, description: str | None = None) -> str:
+            """Load full instructions and attachment metadata for an available skill."""
+            if self._skill_manager is None:
+                return "No skills are loaded."
+
+            skill = self._skill_manager.get_skill(name)
+            payload = self._skill_manager.render_skill_payload(name, description=description)
+            if skill is not None:
+                attachment_info = self._skill_manager.list_attachments(skill)
+                context = _tool_event_context.get()
+                if context is not None:
+                    await self._emit(
+                        "skill_used",
+                        run_id=context["run_id"],
+                        conversation_id=context["conversation_id"],
+                        iteration=context["iteration"],
+                        name=skill.name,
+                        metadata={
+                            "skill_name": skill.name,
+                            "path": str(skill.skill_dir),
+                            "content_length": len(skill.content),
+                            "attachment_count": attachment_info["count"],
+                            "truncated": attachment_info["truncated"],
+                        },
+                    )
+            return payload
+
+        self._registry.register(
+            use_skill,
+            name="use_skill",
+            description=(
+                "Load a skill's full SKILL.md instructions and attachment manifest by skill name. "
+                "Use this after reviewing the Available Skills metadata in the system prompt."
+            ),
+            conflict="error",
         )
 
     def _load_plugins(self) -> list[str]:
@@ -247,21 +292,12 @@ class Agent:
         *,
         emit_done: bool = True,
         save_conversation: bool = True,
-        route_skills: bool = True,
     ) -> Response:
         run_id = run_id or f"run_{uuid4().hex}"
         tools = self._registry.get_openai_tools() or None
         if tools and not getattr(self._provider, "supports_tools", False):
             raise RuntimeError("Configured LLM provider does not support tool calling")
         history: list[dict[str, Any]] = list(messages)
-
-        if route_skills:
-            history = await self._route_and_inject_skills(
-                history,
-                user_input=messages[-1]["content"],
-                run_id=run_id,
-                conversation_id=conversation_id,
-            )
 
         for iteration in range(self.config.max_iterations):
             kwargs: dict[str, Any] = {
@@ -350,12 +386,7 @@ class Agent:
         run_id: str,
     ) -> Response:
         step_results: list[StepResult] = []
-        plan_messages = await self._route_and_inject_skills(
-            list(messages),
-            user_input=goal,
-            run_id=run_id,
-            conversation_id=conversation_id,
-        )
+        plan_messages = list(messages)
 
         async def run_step(step: PlanStep) -> StepResult:
             step_messages = _messages_for_plan_step(
@@ -371,7 +402,6 @@ class Agent:
                     run_id=run_id,
                     emit_done=False,
                     save_conversation=False,
-                    route_skills=False,
                 )
             except Exception as exc:
                 return StepResult(
@@ -615,83 +645,6 @@ class Agent:
             content = content.rstrip() + "\n" + "\n".join(lines)
         return content, usage
 
-    async def _route_and_inject_skills(
-        self,
-        history: list[dict[str, Any]],
-        *,
-        user_input: str,
-        run_id: str,
-        conversation_id: str | None,
-    ) -> list[dict[str, Any]]:
-        if not self._skill_manager or not self._skill_manager.skills or not self._skill_router:
-            return history
-        skills = self._skill_manager.skills
-        await self._emit(
-            "skill_route_start",
-            run_id=run_id,
-            conversation_id=conversation_id,
-            metadata={
-                "candidate_names": [skill.name for skill in skills],
-                "candidate_count": len(skills),
-                "router": type(self._skill_router).__name__,
-            },
-        )
-        route_start = time.perf_counter()
-        try:
-            result = await self._skill_router.route(user_input=user_input, skills=skills)
-        except Exception as exc:
-            logger.warning("Skill router route failed", exc_info=True)
-            error_type = type(exc).__name__
-            result = SkillRouteResult(
-                duration_ms=round((time.perf_counter() - route_start) * 1000, 3),
-                error_type=error_type,
-                error_message=str(exc) or error_type,
-            )
-
-        if result.error_type is not None:
-            await self._emit(
-                "skill_route_error",
-                run_id=run_id,
-                conversation_id=conversation_id,
-                content=result.error_message or "",
-                duration_ms=result.duration_ms,
-                metadata={
-                    "error_type": result.error_type,
-                    "fallback": "no_skills",
-                },
-            )
-            return history
-
-        await self._emit(
-            "skill_route_end",
-            run_id=run_id,
-            conversation_id=conversation_id,
-            content=result.raw_output,
-            duration_ms=result.duration_ms,
-            metadata={
-                "matched_names": [skill.name for skill in result.matched_skills],
-                "unrecognized_names": result.unrecognized_names,
-            },
-        )
-        for skill in result.matched_skills:
-            header = f'<skill name="{skill.name}" path="{skill.skill_dir}">\n'
-            header += f"{skill.content}\n</skill>"
-            history.insert(0, {
-                "role": "system",
-                "content": header,
-            })
-            await self._emit(
-                "skill_injected",
-                run_id=run_id,
-                conversation_id=conversation_id,
-                name=skill.name,
-                metadata={
-                    "path": str(skill.skill_dir),
-                    "content_length": len(skill.content),
-                },
-            )
-        return history
-
     async def _execute_tool_call_with_events(
         self,
         tool_call: Any,
@@ -716,11 +669,19 @@ class Agent:
                 arguments=arguments,
                 attempt=attempt,
             )
-            result = await self._registry.execute_with_result(
-                name,
-                arguments,
-                timeout=self.config.tool_timeout,
-            )
+            token = _tool_event_context.set({
+                "run_id": run_id,
+                "conversation_id": conversation_id,
+                "iteration": iteration,
+            })
+            try:
+                result = await self._registry.execute_with_result(
+                    name,
+                    arguments,
+                    timeout=self.config.tool_timeout,
+                )
+            finally:
+                _tool_event_context.reset(token)
             if result.ok:
                 await self._emit(
                     "tool_end",
@@ -775,12 +736,6 @@ class Agent:
         if tools and not getattr(self._provider, "supports_tools", False):
             raise RuntimeError("Configured LLM provider does not support tool calling")
         history: list[dict[str, Any]] = list(messages)
-        history = await self._route_and_inject_skills(
-            history,
-            user_input=messages[-1]["content"],
-            run_id=run_id,
-            conversation_id=conversation_id,
-        )
 
         async def _stream_generator():
             for iteration in range(self.config.max_iterations):

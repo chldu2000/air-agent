@@ -173,7 +173,7 @@ Use `FileMemoryStore("memory.json")` instead of `InMemoryMemoryStore()` when you
 
 ### 8. Observe Runs with Tracing
 
-Tracing is opt-in. When enabled, the agent emits structured `RunEvent` records for LLM calls, tool calls, retries, skill routing, errors, and completion.
+Tracing is opt-in. When enabled, the agent emits structured `RunEvent` records for LLM calls, tool calls, retries, explicit skill usage, errors, and completion.
 
 ```python
 from air_agent import Agent, AgentConfig
@@ -212,14 +212,7 @@ Useful event types include `llm_start`, `llm_end`, `tool_start`, `tool_end`, `to
 
 Plan-and-Execute tracing adds `plan_created`, `step_start`, `step_end`, `step_error`, and `plan_revised`. Step events include the step id in `name` plus metadata such as `step_index`, dependencies, step status, and plan status.
 
-Skills tracing adds:
-
-- `skill_route_start` with `metadata.candidate_names`, `metadata.candidate_count`, and `metadata.router`
-- `skill_route_end` with the router `raw output` in `content`, `metadata.matched_names`, `metadata.unrecognized_names`, and `duration_ms`
-- `skill_route_error` with the failure message in `content`, `metadata.error_type`, `metadata.fallback="no_skills"`, and `duration_ms`
-- `skill_injected` with the injected skill `name`, `metadata.path`, and `metadata.content_length`
-
-`skill_route_end.content` contains the complete model-generated router output. Tracing logs may therefore include sensitive prompt or routing data; enable logging, storage, access, and retention controls accordingly.
+Skills tracing adds `skill_used` when the built-in `use_skill` tool loads a skill. The event includes the skill name, path, content length, attachment count, and truncation status. The `use_skill` call also emits normal `tool_start` and `tool_end` events, so skill loading appears in the same timeline as other tool usage.
 
 ### Load Configuration from JSON
 
@@ -384,20 +377,27 @@ agent = Agent(config)
 response = await agent.run("I want to brainstorm a new feature")
 ```
 
-Skills work via progressive prompt injection:
-- All skill metadata (name + description) is always included in the system prompt
-- When a user query matches relevant skills, the full skill content is injected into the conversation context
-- Skill matching uses an LLM-based router by default; you can provide a custom `SkillRouter` implementation
+Skills use explicit tool loading:
+- Skill metadata (name + description) is always included in the system prompt.
+- When skills are loaded, the agent automatically receives a `use_skill` tool.
+- The main agent decides when to call `use_skill(name="...")`; the full `SKILL.md` body and attachment manifest are returned as a normal tool result.
+- Attachment manifests list bundled files such as `scripts/` or `references/` by relative path, type, and size. They do not inline attachment file contents.
 
-**Custom router:**
+Example tool result shape:
 
-```python
-from air_agent import SkillRouter
+```text
+# Skill: brainstorming
+Description: Use when starting creative work or exploring ideas
+Path: skills/brainstorming
 
-class KeywordRouter(SkillRouter):
-    async def match(self, user_input: str, skills: list) -> list:
-        return [s for s in skills if s.name in user_input.lower()]
+## Instructions
+Ask questions one at a time to refine the idea.
+
+## Attachments
+None
 ```
+
+`SkillRouter`, `LLMSkillRouter`, and `SkillRouteResult` remain exported for legacy or advanced integrations, but the default `Agent` no longer performs automatic skill routing or injects full skill content into system messages.
 
 ### Built-in Tools
 
@@ -656,7 +656,7 @@ src/air_agent/
 ├── skills/
 │   ├── skill.py         # Skill dataclass + SKILL.md parser
 │   ├── manager.py       # SkillManager (directory scanning)
-│   └── router.py        # SkillRouter ABC + LLMSkillRouter
+│   └── router.py        # Legacy SkillRouter ABC + LLMSkillRouter exports
 └── subagent.py          # Parallel subagent manager
 ```
 
