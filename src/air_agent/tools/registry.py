@@ -207,3 +207,8 @@ class ToolRegistry:
 
     def has_tool(self, name: str) -> bool:
         return name in self._tools
+
+    def clone(self) -> ToolRegistry:
+        registry = ToolRegistry()
+        registry._tools = dict(self._tools)
+        return registry

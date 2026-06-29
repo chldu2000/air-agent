@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 
 ToolErrorKind = Literal[
@@ -12,6 +12,17 @@ ToolErrorKind = Literal[
     "permission_denied",
     "tool_error",
 ]
+SubagentAggregation = Literal["concat", "summarize", "vote"]
+
+
+@dataclass
+class AgentRole:
+    name: str
+    description: str = ""
+    system_prompt: str | None = None
+    tools: list[Callable] = field(default_factory=list)
+    skills_dir: str | None = None
+    memory_scope: str | None = None
 
 
 @dataclass
@@ -122,6 +133,10 @@ class SubagentResult:
     status: str  # "success" | "timeout" | "error"
     content: str
     usage: TokenUsage | dict[str, int] | None = None
+    role: str | None = None
+    task: str | None = None
+    events: list[RunEvent] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
         if isinstance(self.usage, dict):
