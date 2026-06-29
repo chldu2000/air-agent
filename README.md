@@ -484,7 +484,7 @@ async with agent:  # auto connect/disconnect MCP servers
 
 Supports both stdio and StreamableHTTP MCP transports. `MCPServerSSE` is the compatibility name for URL-based MCP servers. Once connected, tools exposed by the server are automatically registered in the agent's tool list.
 
-### Parallel Subagents
+### Parallel And Role-Aware Subagents
 
 ```python
 from air_agent import SubagentConfig
@@ -503,6 +503,52 @@ for r in results:
 ```
 
 Each task runs as an isolated prompt through the same agent, with concurrency limited by `SubagentConfig.max_parallel`.
+
+`delegate()` is backward-compatible: without roles or aggregation it still returns `list[SubagentResult]`. For collaborative workflows, add roles with their own prompt, tools, skills directory, and memory scope.
+
+```python
+from air_agent import AgentRole
+
+results = await agent.delegate(
+    tasks=["Review the implementation", "Check security risks"],
+    roles=[
+        AgentRole(name="reviewer", system_prompt="Focus on correctness and missing tests."),
+        AgentRole(name="security", system_prompt="Focus on permission and data exposure risks."),
+    ],
+)
+
+for result in results:
+    print(result.role, result.status, result.content)
+```
+
+Many roles can also inspect the same task:
+
+```python
+results = await agent.delegate(
+    tasks=["Evaluate this release plan"],
+    roles=[
+        AgentRole(name="product", system_prompt="Assess user value."),
+        AgentRole(name="engineering", system_prompt="Assess implementation risk."),
+    ],
+)
+```
+
+Use aggregation when you want one final result instead of one result per subagent:
+
+```python
+summary = await agent.delegate(
+    tasks=["Review the implementation", "Check security risks"],
+    roles=[
+        AgentRole(name="reviewer", system_prompt="Focus on correctness."),
+        AgentRole(name="security", system_prompt="Focus on security."),
+    ],
+    aggregation="summarize",  # "concat", "summarize", "vote", or a callable
+)
+
+print(summary.content)
+```
+
+Each `SubagentResult` includes `role`, `task`, `status`, `content`, `usage`, captured child `events`, and `metadata`.
 
 ## Configuration
 
@@ -546,7 +592,7 @@ src/air_agent/
 │   ├── types.py         # LLMProvider protocol + neutral response types
 │   └── openai.py        # Default OpenAI provider adapter
 ├── tracing.py           # RunEvent dispatcher and structured event logging
-├── types.py             # Response, StreamEvent, SubagentResult
+├── types.py             # Response, StreamEvent, AgentRole, SubagentResult
 ├── tools/
 │   ├── base.py          # Tool dataclass
 │   ├── registry.py      # Tool registry

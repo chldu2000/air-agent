@@ -5,7 +5,7 @@ import inspect
 import logging
 import time
 from types import SimpleNamespace
-from typing import Any, AsyncIterator, Literal
+from typing import Any, AsyncIterator, Callable, Literal
 from uuid import uuid4
 
 from air_agent.config import AgentConfig, SubagentConfig
@@ -20,7 +20,7 @@ from air_agent.skills.router import LLMSkillRouter, SkillRouteResult
 from air_agent.subagent import delegate as _delegate
 from air_agent.tools.registry import ToolRegistry
 from air_agent.tracing import EventDispatcher
-from air_agent.types import Response, RunEvent, StreamEvent, SubagentResult, TokenUsage
+from air_agent.types import AgentRole, Response, RunEvent, StreamEvent, SubagentAggregation, SubagentResult, TokenUsage
 
 logger = logging.getLogger(__name__)
 
@@ -875,8 +875,10 @@ class Agent:
         self,
         tasks: list[str],
         config: SubagentConfig | None = None,
-    ) -> list[SubagentResult]:
-        return await _delegate(self, tasks, config)
+        roles: list[AgentRole] | None = None,
+        aggregation: SubagentAggregation | Callable | None = None,
+    ) -> list[SubagentResult] | SubagentResult:
+        return await _delegate(self, tasks, config, roles=roles, aggregation=aggregation)
 
     async def _maybe_update_memory_summary(
         self,

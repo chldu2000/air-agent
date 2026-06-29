@@ -485,7 +485,7 @@ async with agent:  # 自动连接/断开 MCP server
 
 支持 stdio 和 StreamableHTTP 两种 MCP transport。`MCPServerSSE` 是 URL 型 MCP server 的兼容命名。连接 MCP 后，server 暴露的工具会自动注册到 Agent 的工具列表中。
 
-### 并行 Subagent
+### 并行与角色化 Subagent
 
 ```python
 from air_agent import SubagentConfig
@@ -504,6 +504,52 @@ for r in results:
 ```
 
 每个 task 会以独立 prompt 通过同一个 Agent 并发执行，并由 `SubagentConfig.max_parallel` 限制并发数。
+
+`delegate()` 保持向后兼容：不传 roles 或 aggregation 时，仍然返回 `list[SubagentResult]`。如果需要协作式工作流，可以为 subagent 增加角色，每个角色都可以有自己的 prompt、工具、skills 目录和 memory scope。
+
+```python
+from air_agent import AgentRole
+
+results = await agent.delegate(
+    tasks=["审查实现", "检查安全风险"],
+    roles=[
+        AgentRole(name="reviewer", system_prompt="关注正确性和缺失测试。"),
+        AgentRole(name="security", system_prompt="关注权限和数据暴露风险。"),
+    ],
+)
+
+for result in results:
+    print(result.role, result.status, result.content)
+```
+
+也可以让多个角色检查同一个任务：
+
+```python
+results = await agent.delegate(
+    tasks=["评估这个发布计划"],
+    roles=[
+        AgentRole(name="product", system_prompt="评估用户价值。"),
+        AgentRole(name="engineering", system_prompt="评估实现风险。"),
+    ],
+)
+```
+
+如果希望得到一个最终结果，而不是每个 subagent 一个结果，可以启用 aggregation：
+
+```python
+summary = await agent.delegate(
+    tasks=["审查实现", "检查安全风险"],
+    roles=[
+        AgentRole(name="reviewer", system_prompt="关注正确性。"),
+        AgentRole(name="security", system_prompt="关注安全。"),
+    ],
+    aggregation="summarize",  # "concat", "summarize", "vote"，或自定义 callable
+)
+
+print(summary.content)
+```
+
+每个 `SubagentResult` 都包含 `role`、`task`、`status`、`content`、`usage`、捕获到的 child `events` 和 `metadata`。
 
 ## 配置
 
@@ -547,7 +593,7 @@ src/air_agent/
 │   ├── types.py         # LLMProvider 协议 + 中立响应类型
 │   └── openai.py        # 默认 OpenAI provider adapter
 ├── tracing.py           # RunEvent 分发与结构化事件日志
-├── types.py             # Response, StreamEvent, SubagentResult
+├── types.py             # Response, StreamEvent, AgentRole, SubagentResult
 ├── tools/
 │   ├── base.py          # Tool 数据类
 │   ├── registry.py      # 工具注册中心

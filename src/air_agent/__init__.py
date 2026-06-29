@@ -22,9 +22,11 @@ from air_agent.providers import (
     OpenAIProvider,
 )
 from air_agent.types import (
+    AgentRole,
     Response,
     RunEvent,
     StreamEvent,
+    SubagentAggregation,
     SubagentResult,
     ToolErrorKind,
     ToolExecutionResult,
@@ -38,12 +40,14 @@ from air_agent.tools.builtin.config import BuiltinToolsConfig
 __all__ = [
     "Agent",
     "AgentConfig",
+    "AgentRole",
     "MCPServerStdio",
     "MCPServerSSE",
     "SubagentConfig",
     "Response",
     "RunEvent",
     "StreamEvent",
+    "SubagentAggregation",
     "SubagentResult",
     "ToolErrorKind",
     "ToolExecutionResult",
