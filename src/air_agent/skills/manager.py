@@ -9,32 +9,37 @@ logger = logging.getLogger(__name__)
 
 
 class SkillManager:
-    def __init__(self, skills_dir: str | Path) -> None:
-        self.skills_dir = Path(skills_dir)
+    def __init__(self, skills_dir: str | Path | list[str | Path]) -> None:
+        if isinstance(skills_dir, list):
+            self.skills_dirs = [Path(path) for path in skills_dir]
+        else:
+            self.skills_dirs = [Path(skills_dir)]
+        self.skills_dir = self.skills_dirs[0]
         self.skills: list[Skill] = []
 
     def load(self) -> None:
         """Scan skills_dir for subdirectories containing SKILL.md files."""
         self.skills.clear()
 
-        if not self.skills_dir.is_dir():
-            logger.warning("Skills directory does not exist: %s", self.skills_dir)
-            return
+        for skills_dir in self.skills_dirs:
+            if not skills_dir.is_dir():
+                logger.warning("Skills directory does not exist: %s", skills_dir)
+                continue
 
-        for entry in sorted(self.skills_dir.iterdir()):
-            if not entry.is_dir():
-                continue
-            skill_file = entry / "SKILL.md"
-            if not skill_file.is_file():
-                logger.warning("Skipping directory without SKILL.md: %s", entry)
-                continue
-            skill = parse_skill_file(skill_file)
-            if skill is None:
-                logger.warning("Skipping invalid SKILL.md: %s", skill_file)
-                continue
-            self.skills.append(skill)
+            for entry in sorted(skills_dir.iterdir()):
+                if not entry.is_dir():
+                    continue
+                skill_file = entry / "SKILL.md"
+                if not skill_file.is_file():
+                    logger.warning("Skipping directory without SKILL.md: %s", entry)
+                    continue
+                skill = parse_skill_file(skill_file)
+                if skill is None:
+                    logger.warning("Skipping invalid SKILL.md: %s", skill_file)
+                    continue
+                self.skills.append(skill)
 
-        logger.info("Loaded %d skill(s) from %s", len(self.skills), self.skills_dir)
+        logger.info("Loaded %d skill(s) from %s", len(self.skills), self.skills_dirs)
 
     def metadata_summary(self) -> str:
         """Generate compact summary of all skills for system prompt injection."""

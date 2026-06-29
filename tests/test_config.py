@@ -144,6 +144,35 @@ class TestPlanExecuteConfig:
             AgentConfig(max_plan_steps=0)
 
 
+class TestPluginConfig:
+    def test_plugin_defaults_are_disabled(self):
+        config = AgentConfig()
+
+        assert config.plugins == []
+        assert config.plugin_permissions is None
+
+    def test_plugins_from_json(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "plugins": ["/tmp/plugin-a", "/tmp/plugin-b"],
+            "plugin_permissions": {"plugin-a": True},
+        }))
+
+        config = AgentConfig.from_json(str(config_file))
+
+        assert config.plugins == ["/tmp/plugin-a", "/tmp/plugin-b"]
+        assert config.plugin_permissions == {"plugin-a": True}
+
+    def test_plugins_from_env(self, monkeypatch):
+        monkeypatch.setenv("AIR_PLUGINS", json.dumps(["/tmp/plugin-a"]))
+        monkeypatch.setenv("AIR_PLUGIN_PERMISSIONS", json.dumps({"plugin-a": True}))
+
+        config = AgentConfig.from_env()
+
+        assert config.plugins == ["/tmp/plugin-a"]
+        assert config.plugin_permissions == {"plugin-a": True}
+
+
 class TestFromJson:
     def test_basic_fields(self, tmp_path):
         config_file = tmp_path / "config.json"

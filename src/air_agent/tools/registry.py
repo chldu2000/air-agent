@@ -65,8 +65,17 @@ class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, Tool] = {}
 
-    def register(self, func: Callable, name: str | None = None, description: str = "") -> None:
+    def register(
+        self,
+        func: Callable,
+        name: str | None = None,
+        description: str = "",
+        *,
+        conflict: str = "replace",
+    ) -> None:
         tool_name = name or func.__name__
+        if conflict == "error" and tool_name in self._tools:
+            raise ValueError(f"Tool already registered: {tool_name}")
         tool_desc = description or func.__doc__ or ""
         parameters = _extract_parameters(func)
         self._tools[tool_name] = Tool(

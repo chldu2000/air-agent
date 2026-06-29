@@ -80,6 +80,8 @@ class AgentConfig:
     strategy: Literal["react", "plan_execute"] = "react"
     planner: Any = None
     max_plan_steps: int = 8
+    plugins: list[str] = field(default_factory=list)
+    plugin_permissions: dict[str, Any] | None = None
 
     def __post_init__(self):
         if self.api_key is None:
@@ -155,5 +157,13 @@ class AgentConfig:
         builtin_raw = os.environ.get(f"{prefix}BUILTIN_TOOLS")
         if builtin_raw:
             kwargs["builtin_tools"] = BuiltinToolsConfig.from_dict(json.loads(builtin_raw))
+
+        plugins_raw = os.environ.get(f"{prefix}PLUGINS")
+        if plugins_raw:
+            kwargs["plugins"] = json.loads(plugins_raw)
+
+        plugin_permissions_raw = os.environ.get(f"{prefix}PLUGIN_PERMISSIONS")
+        if plugin_permissions_raw:
+            kwargs["plugin_permissions"] = json.loads(plugin_permissions_raw)
 
         return cls(**kwargs)

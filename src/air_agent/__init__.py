@@ -13,6 +13,7 @@ from air_agent.planner import (
     StepResult,
     StepResultStatus,
 )
+from air_agent.plugins import PluginContext, PluginLoadError, PluginManifest
 from air_agent.providers import (
     LLMProvider,
     LLMResponse,
@@ -70,6 +71,9 @@ __all__ = [
     "PlanStepStatus",
     "StepResult",
     "StepResultStatus",
+    "PluginContext",
+    "PluginLoadError",
+    "PluginManifest",
     "LLMToolCall",
     "LLMResponse",
     "LLMStreamToolCallDelta",

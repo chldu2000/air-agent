@@ -465,6 +465,52 @@ config = AgentConfig(model="gpt-4o",
 | `max_list_entries` | int | `500` | Directory listing cap |
 | `max_output_bytes` | int | `50000` | Shell output truncation |
 
+### Local Plugins
+
+Plugins are explicit local directories. air-agent does not install remote code or scan plugin folders automatically.
+
+```text
+my-plugin/
+├── air-agent-plugin.json
+└── plugin.py
+```
+
+`air-agent-plugin.json`:
+
+```json
+{
+  "name": "web-tools",
+  "version": "0.1.0",
+  "description": "Example namespaced web tools",
+  "entrypoint": "plugin:register",
+  "capabilities": ["tools"],
+  "permissions": {"network": ["example.com"]}
+}
+```
+
+`plugin.py`:
+
+```python
+async def search(query: str) -> str:
+    return f"Results for {query}"
+
+
+def register(context):
+    context.register_tool(search, namespace="web", description="Search the web")
+```
+
+Enable the plugin and authorize declared permissions:
+
+```python
+agent = Agent(AgentConfig(
+    model="gpt-4o",
+    plugins=["./my-plugin"],
+    plugin_permissions={"web-tools": True},
+))
+```
+
+The tool is exposed as `web.search`. Plugins can also call `context.add_skills_dir(...)`, `context.set_provider(...)`, `context.set_memory(...)`, or `context.set_planner(...)`. If a plugin declares non-empty `permissions`, it must be explicitly allowed in `plugin_permissions`; v0.8 records and gates permissions at plugin load time but does not enforce granular runtime network/file/shell policies.
+
 ### Connect to MCP Servers
 
 ```python
@@ -568,6 +614,8 @@ AgentConfig(
     strategy="react",             # "react" or "plan_execute"
     planner=None,                  # Planner object; programmatic only
     max_plan_steps=8,              # Plan-and-Execute step cap
+    plugins=[],                    # Local plugin directories
+    plugin_permissions=None,       # Per-plugin authorization map
     max_iterations=20,           # Max tool-calling rounds
     tool_timeout=30.0,           # Single tool call timeout (seconds)
     mcp_servers=[],              # MCP server list
@@ -588,6 +636,7 @@ src/air_agent/
 ├── config.py            # Configuration dataclass
 ├── memory.py            # MemoryRecord, MemoryStore, and memory store implementations
 ├── planner.py           # Planner protocol, LLMPlanner, Plan, PlanStep, StepResult
+├── plugins.py           # Local plugin manifests, context, and loader
 ├── providers/
 │   ├── types.py         # LLMProvider protocol + neutral response types
 │   └── openai.py        # Default OpenAI provider adapter

@@ -12,6 +12,7 @@ from air_agent.config import AgentConfig, SubagentConfig
 from air_agent.memory import MemoryRecord, filter_memory_records_for_scope, format_memory_context
 from air_agent.mcp.client import MCPClient
 from air_agent.planner import LLMPlanner, Plan, PlanContext, PlanStep, Planner, StepResult
+from air_agent.plugins import PluginLoadError, load_plugin
 from air_agent.providers import LLMToolCall, OpenAIProvider
 from air_agent.tools.builtin import register_builtin_tools
 from air_agent.tools.builtin.config import BuiltinToolsConfig
@@ -28,11 +29,12 @@ logger = logging.getLogger(__name__)
 class Agent:
     def __init__(self, config: AgentConfig) -> None:
         self.config = config
-        self._provider = _build_provider(config)
-        self._client = getattr(self._provider, "client", None)
         self._registry = ToolRegistry()
         builtin_cfg = config.builtin_tools or BuiltinToolsConfig()
         register_builtin_tools(self._registry, builtin_cfg)
+        plugin_skills_dirs = self._load_plugins()
+        self._provider = _build_provider(config)
+        self._client = getattr(self._provider, "client", None)
         self._mcp_clients: list[MCPClient] = []
         self._conversations: dict[str, list[dict[str, Any]]] = {}
         self._skill_manager: SkillManager | None = None
@@ -42,8 +44,9 @@ class Agent:
             handlers=config.event_handlers,
             log_events=config.log_events,
         )
-        if config.skills_dir:
-            self._skill_manager = SkillManager(config.skills_dir)
+        skills_dirs = [path for path in [config.skills_dir, *plugin_skills_dirs] if path]
+        if skills_dirs:
+            self._skill_manager = SkillManager(skills_dirs)
             self._skill_manager.load()
             self._skill_router = LLMSkillRouter(provider=self._provider, model=config.model)
         self._planner: Planner = config.planner or LLMPlanner(
@@ -51,6 +54,41 @@ class Agent:
             model=config.model,
             max_steps=config.max_plan_steps,
         )
+
+    def _load_plugins(self) -> list[str]:
+        skills_dirs: list[str] = []
+        provider_from_plugin = None
+        memory_from_plugin = None
+        planner_from_plugin = None
+
+        for plugin_path in self.config.plugins:
+            result = load_plugin(
+                plugin_path,
+                registry=self._registry,
+                plugin_permissions=self.config.plugin_permissions,
+            )
+            context = result.context
+            skills_dirs.extend(context.skills_dirs)
+            if context.provider is not None:
+                if self.config.provider is not None or provider_from_plugin is not None:
+                    raise PluginLoadError(f"Plugin {result.manifest.name} cannot set provider: provider already configured")
+                provider_from_plugin = context.provider
+            if context.memory is not None:
+                if self.config.memory is not None or memory_from_plugin is not None:
+                    raise PluginLoadError(f"Plugin {result.manifest.name} cannot set memory: memory already configured")
+                memory_from_plugin = context.memory
+            if context.planner is not None:
+                if self.config.planner is not None or planner_from_plugin is not None:
+                    raise PluginLoadError(f"Plugin {result.manifest.name} cannot set planner: planner already configured")
+                planner_from_plugin = context.planner
+
+        if provider_from_plugin is not None:
+            self.config.provider = provider_from_plugin
+        if memory_from_plugin is not None:
+            self.config.memory = memory_from_plugin
+        if planner_from_plugin is not None:
+            self.config.planner = planner_from_plugin
+        return skills_dirs
 
     def tool(self, name: str | None = None, description: str = ""):
         def decorator(func):

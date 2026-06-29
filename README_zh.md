@@ -466,6 +466,52 @@ config = AgentConfig(model="gpt-4o",
 | `max_list_entries` | int | `500` | 目录列表条目上限 |
 | `max_output_bytes` | int | `50000` | Shell 输出截断阈值 |
 
+### 本地插件
+
+插件是显式配置的本地目录。air-agent 不会自动安装远程代码，也不会自动扫描插件目录。
+
+```text
+my-plugin/
+├── air-agent-plugin.json
+└── plugin.py
+```
+
+`air-agent-plugin.json`：
+
+```json
+{
+  "name": "web-tools",
+  "version": "0.1.0",
+  "description": "示例命名空间 Web 工具",
+  "entrypoint": "plugin:register",
+  "capabilities": ["tools"],
+  "permissions": {"network": ["example.com"]}
+}
+```
+
+`plugin.py`：
+
+```python
+async def search(query: str) -> str:
+    return f"Results for {query}"
+
+
+def register(context):
+    context.register_tool(search, namespace="web", description="搜索 Web")
+```
+
+启用插件并授权其声明的权限：
+
+```python
+agent = Agent(AgentConfig(
+    model="gpt-4o",
+    plugins=["./my-plugin"],
+    plugin_permissions={"web-tools": True},
+))
+```
+
+该工具会以 `web.search` 暴露。插件也可以调用 `context.add_skills_dir(...)`、`context.set_provider(...)`、`context.set_memory(...)` 或 `context.set_planner(...)`。如果插件声明了非空 `permissions`，必须在 `plugin_permissions` 中显式授权；v0.8 会在插件加载时记录并检查权限声明，但不会执行细粒度的运行时网络/文件/Shell 权限控制。
+
 ### 连接 MCP Server
 
 ```python
@@ -569,6 +615,8 @@ AgentConfig(
     strategy="react",             # "react" 或 "plan_execute"
     planner=None,                  # Planner 对象；仅支持程序化传入
     max_plan_steps=8,              # Plan-and-Execute step 上限
+    plugins=[],                    # 本地插件目录
+    plugin_permissions=None,       # 每个插件的授权映射
     max_iterations=20,           # 工具调用最大轮次
     tool_timeout=30.0,           # 单次工具调用超时（秒）
     mcp_servers=[],              # MCP server 列表
@@ -589,6 +637,7 @@ src/air_agent/
 ├── config.py            # 配置数据类
 ├── memory.py            # MemoryRecord、MemoryStore 与 memory store 实现
 ├── planner.py           # Planner 协议、LLMPlanner、Plan、PlanStep、StepResult
+├── plugins.py           # 本地插件 manifest、context 与加载器
 ├── providers/
 │   ├── types.py         # LLMProvider 协议 + 中立响应类型
 │   └── openai.py        # 默认 OpenAI provider adapter
